@@ -34,6 +34,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class CentralPolicyTest {
 
+    /** A caller with no team membership: the base policy, and nothing extra. */
+    static final dev.mahadi.toolgate.auth.AccessToken ANYONE =
+            new dev.mahadi.toolgate.auth.AccessToken(
+                    "test-caller", java.util.Set.of("tools:read", "tools:call"),
+                    java.util.Set.of(), null, null);
+
     private static final String SERVER = "files";
 
     private static Mcp.Tool readFile(String description) {
@@ -79,11 +85,17 @@ class CentralPolicyTest {
 
     private static PolicyBundle bundleWith(Set<String> allow, List<PolicyBundle.Reviewed> reviewed,
                                            boolean requireReviewed, Instant expires) {
+        return bundleWith(allow, reviewed, requireReviewed, expires, Map.of());
+    }
+
+    private static PolicyBundle bundleWith(Set<String> allow, List<PolicyBundle.Reviewed> reviewed,
+                                           boolean requireReviewed, Instant expires,
+                                           Map<String, Map<String, PolicyBundle.ServerPolicy>> teamPolicies) {
         return new PolicyBundle(PolicyBundle.SCHEMA_VERSION, 1, "security@example.com",
                 Instant.now().minus(1, ChronoUnit.MINUTES), expires,
                 50, false, requireReviewed,
                 Map.of(SERVER, new PolicyBundle.ServerPolicy(allow, Set.of())),
-                reviewed);
+                reviewed, teamPolicies);
     }
 
     @Test
@@ -97,9 +109,9 @@ class CentralPolicyTest {
         var shell = new Mcp.Tool("exec_shell", "Run Shell", "Execute a shell command.",
                 Map.of("type", "object"), null, null, null);
 
-        assertThat(h.policy().evaluateAdvertisement(SERVER, shell))
+        assertThat(h.policy().evaluateAdvertisement(ANYONE, SERVER, shell))
                 .isInstanceOf(PolicyEngine.Decision.Deny.class);
-        assertThat(h.policy().evaluateAdvertisement(SERVER, readFile(BENIGN)))
+        assertThat(h.policy().evaluateAdvertisement(ANYONE, SERVER, readFile(BENIGN)))
                 .isInstanceOf(PolicyEngine.Decision.Allow.class);
     }
 
@@ -109,7 +121,7 @@ class CentralPolicyTest {
         var h = harness(dir, bundleWith(Set.of("read_file"), List.of(), false,
                 Instant.now().plus(1, ChronoUnit.DAYS)), Dsse.generateKeyPair());
 
-        assertThat(h.policy().evaluateAdvertisement("some-other-server", readFile(BENIGN)))
+        assertThat(h.policy().evaluateAdvertisement(ANYONE, "some-other-server", readFile(BENIGN)))
                 .isInstanceOf(PolicyEngine.Decision.Deny.class);
     }
 
@@ -129,13 +141,13 @@ class CentralPolicyTest {
         h.pins().pin(SERVER, somethingElse);
 
         // The locally pinned version is still refused: review outranks local history.
-        assertThat(h.policy().evaluateAdvertisement(SERVER, somethingElse))
+        assertThat(h.policy().evaluateAdvertisement(ANYONE, SERVER, somethingElse))
                 .isInstanceOf(PolicyEngine.Decision.Deny.class);
-        assertThat(h.policy().evaluateAdvertisement(SERVER, somethingElse).reason())
+        assertThat(h.policy().evaluateAdvertisement(ANYONE, SERVER, somethingElse).reason())
                 .contains("centrally reviewed");
 
         // And the reviewed one is allowed even though it was never seen here before.
-        assertThat(h.policy().evaluateAdvertisement(SERVER, reviewedTool))
+        assertThat(h.policy().evaluateAdvertisement(ANYONE, SERVER, reviewedTool))
                 .isInstanceOf(PolicyEngine.Decision.Allow.class);
     }
 
@@ -145,7 +157,7 @@ class CentralPolicyTest {
         var h = harness(dir, bundleWith(Set.of("read_file"), List.of(), true,
                 Instant.now().plus(1, ChronoUnit.DAYS)), Dsse.generateKeyPair());
 
-        var decision = h.policy().evaluateAdvertisement(SERVER, readFile(BENIGN));
+        var decision = h.policy().evaluateAdvertisement(ANYONE, SERVER, readFile(BENIGN));
 
         assertThat(decision).isInstanceOf(PolicyEngine.Decision.Deny.class);
         assertThat(decision.reason()).contains("no reviewed definition");
@@ -157,11 +169,116 @@ class CentralPolicyTest {
         var h = harness(dir, bundleWith(Set.of("read_file"), List.of(), false,
                 Instant.now().plus(1, ChronoUnit.DAYS)), Dsse.generateKeyPair());
 
-        assertThat(h.policy().evaluateAdvertisement(SERVER, readFile(BENIGN)))
+        assertThat(h.policy().evaluateAdvertisement(ANYONE, SERVER, readFile(BENIGN)))
                 .isInstanceOf(PolicyEngine.Decision.Allow.class);
         // Still drifts locally, so the fallback is a real control and not a hole.
-        assertThat(h.policy().evaluateAdvertisement(SERVER, readFile("Rewritten.")).reason())
+        assertThat(h.policy().evaluateAdvertisement(ANYONE, SERVER, readFile("Rewritten.")).reason())
                 .contains("changed since it was pinned");
+    }
+
+    private static dev.mahadi.toolgate.auth.AccessToken memberOf(String... teams) {
+        return new dev.mahadi.toolgate.auth.AccessToken(
+                "someone@example.com", Set.of("tools:read", "tools:call"),
+                Set.of(teams), null, null);
+    }
+
+    @Test
+    @DisplayName("a team gets access the base policy does not grant")
+    void teamGrantsExtraAccess(@TempDir Path dir) throws Exception {
+        var teamPolicies = Map.of("platform",
+                Map.of(SERVER, new PolicyBundle.ServerPolicy(Set.of("send_email"), Set.of())));
+
+        var h = harness(dir, bundleWith(Set.of("read_file"), List.of(), false,
+                Instant.now().plus(1, ChronoUnit.DAYS), teamPolicies), Dsse.generateKeyPair());
+
+        var email = new Mcp.Tool("send_email", "Send Email", "Send an email.",
+                Map.of("type", "object"), null, null, null);
+
+        assertThat(h.policy().evaluateAdvertisement(memberOf("platform"), SERVER, email))
+                .isInstanceOf(PolicyEngine.Decision.Allow.class);
+        assertThat(h.policy().evaluateAdvertisement(memberOf("billing"), SERVER, email))
+                .isInstanceOf(PolicyEngine.Decision.Deny.class);
+        assertThat(h.policy().evaluateAdvertisement(ANYONE, SERVER, email))
+                .isInstanceOf(PolicyEngine.Decision.Deny.class);
+    }
+
+    @Test
+    @DisplayName("everyone keeps the base policy regardless of team")
+    void baseAppliesToEveryone(@TempDir Path dir) throws Exception {
+        var teamPolicies = Map.of("platform",
+                Map.of(SERVER, new PolicyBundle.ServerPolicy(Set.of("send_email"), Set.of())));
+
+        var h = harness(dir, bundleWith(Set.of("read_file"), List.of(), false,
+                Instant.now().plus(1, ChronoUnit.DAYS), teamPolicies), Dsse.generateKeyPair());
+
+        assertThat(h.policy().evaluateAdvertisement(memberOf("billing"), SERVER, readFile(BENIGN)))
+                .isInstanceOf(PolicyEngine.Decision.Allow.class);
+    }
+
+    @Test
+    @DisplayName("belonging to two teams grants the union")
+    void multipleTeamsUnion(@TempDir Path dir) throws Exception {
+        var teamPolicies = Map.of(
+                "platform", Map.of(SERVER, new PolicyBundle.ServerPolicy(Set.of("send_email"), Set.of())),
+                "billing", Map.of(SERVER, new PolicyBundle.ServerPolicy(Set.of("exec_shell"), Set.of())));
+
+        var h = harness(dir, bundleWith(Set.of(), List.of(), false,
+                Instant.now().plus(1, ChronoUnit.DAYS), teamPolicies), Dsse.generateKeyPair());
+
+        var both = memberOf("platform", "billing");
+        var email = new Mcp.Tool("send_email", "Send Email", "Send an email.",
+                Map.of("type", "object"), null, null, null);
+        var shell = new Mcp.Tool("exec_shell", "Run Shell", "Run a command.",
+                Map.of("type", "object"), null, null, null);
+
+        assertThat(h.policy().evaluateAdvertisement(both, SERVER, email))
+                .isInstanceOf(PolicyEngine.Decision.Allow.class);
+        assertThat(h.policy().evaluateAdvertisement(both, SERVER, shell))
+                .isInstanceOf(PolicyEngine.Decision.Allow.class);
+    }
+
+    @Test
+    @DisplayName("a team can require approval for the access it grants")
+    void teamCanRequireApproval(@TempDir Path dir) throws Exception {
+        var teamPolicies = Map.of("platform",
+                Map.of(SERVER, new PolicyBundle.ServerPolicy(
+                        Set.of("send_email"), Set.of("send_email"))));
+
+        var h = harness(dir, bundleWith(Set.of(), List.of(), false,
+                Instant.now().plus(1, ChronoUnit.DAYS), teamPolicies), Dsse.generateKeyPair());
+
+        var email = new Mcp.Tool("send_email", "Send Email", "Send an email.",
+                Map.of("type", "object"), null, null, null);
+        var caller = memberOf("platform");
+        h.policy().evaluateAdvertisement(caller, SERVER, email);
+
+        assertThat(h.policy().evaluateCall(caller, SERVER, "send_email"))
+                .isInstanceOf(PolicyEngine.Decision.NeedsApproval.class);
+    }
+
+    @Test
+    @DisplayName("a team cannot remove an approval requirement the base policy set")
+    void teamCannotWeakenApproval(@TempDir Path dir) throws Exception {
+        // The team entry grants send_email with no approval requirement. The base policy
+        // says it needs one. Team membership must not be a way to switch a control off.
+        var teamPolicies = Map.of("platform",
+                Map.of(SERVER, new PolicyBundle.ServerPolicy(Set.of("send_email"), Set.of())));
+
+        var base = new PolicyBundle(PolicyBundle.SCHEMA_VERSION, 1, "security@example.com",
+                Instant.now().minus(1, ChronoUnit.MINUTES),
+                Instant.now().plus(1, ChronoUnit.DAYS), 50, false, false,
+                Map.of(SERVER, new PolicyBundle.ServerPolicy(
+                        Set.of("send_email"), Set.of("send_email"))),
+                List.of(), teamPolicies);
+
+        var h = harness(dir, base, Dsse.generateKeyPair());
+        var email = new Mcp.Tool("send_email", "Send Email", "Send an email.",
+                Map.of("type", "object"), null, null, null);
+        var caller = memberOf("platform");
+        h.policy().evaluateAdvertisement(caller, SERVER, email);
+
+        assertThat(h.policy().evaluateCall(caller, SERVER, "send_email"))
+                .isInstanceOf(PolicyEngine.Decision.NeedsApproval.class);
     }
 
     @Test
@@ -172,11 +289,11 @@ class CentralPolicyTest {
 
         assertThat(h.effective().failedClosed()).isTrue();
 
-        var decision = h.policy().evaluateAdvertisement(SERVER, readFile(BENIGN));
+        var decision = h.policy().evaluateAdvertisement(ANYONE, SERVER, readFile(BENIGN));
         assertThat(decision).isInstanceOf(PolicyEngine.Decision.Deny.class);
         assertThat(decision.reason()).contains("no current policy bundle");
 
-        assertThat(h.policy().evaluateCall(SERVER, "read_file"))
+        assertThat(h.policy().evaluateCall(ANYONE, SERVER, "read_file"))
                 .isInstanceOf(PolicyEngine.Decision.Deny.class);
     }
 }

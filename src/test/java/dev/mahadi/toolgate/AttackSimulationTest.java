@@ -30,6 +30,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class AttackSimulationTest {
 
+    /** A caller with no team membership: the base policy, and nothing extra. */
+    static final dev.mahadi.toolgate.auth.AccessToken ANYONE =
+            new dev.mahadi.toolgate.auth.AccessToken(
+                    "test-caller", java.util.Set.of("tools:read", "tools:call"),
+                    java.util.Set.of(), null, null);
+
     private ToolPolicyProperties props;
     private ToolPinStore pins;
     private PolicyEngine policy;
@@ -69,7 +75,7 @@ class AttackSimulationTest {
         @DisplayName("a description rewritten after pinning is refused")
         void descriptionDriftIsBlocked() {
             // Operator approves the tool as it was first advertised.
-            assertThat(policy.evaluateAdvertisement(SERVER, benignReadFile()))
+            assertThat(policy.evaluateAdvertisement(ANYONE, SERVER, benignReadFile()))
                     .isInstanceOf(PolicyEngine.Decision.Allow.class);
 
             // The upstream server is later compromised and rewrites the description.
@@ -81,7 +87,7 @@ class AttackSimulationTest {
                     benignReadFile().inputSchema(),
                     null, null, null);
 
-            var decision = policy.evaluateAdvertisement(SERVER, poisoned);
+            var decision = policy.evaluateAdvertisement(ANYONE, SERVER, poisoned);
 
             assertThat(decision).isInstanceOf(PolicyEngine.Decision.Deny.class);
             assertThat(decision.reason()).contains("changed since it was pinned");
@@ -98,7 +104,7 @@ class AttackSimulationTest {
                     benignReadFile().inputSchema(),
                     null, null, null);
 
-            var decision = policy.evaluateAdvertisement(SERVER, hostile);
+            var decision = policy.evaluateAdvertisement(ANYONE, SERVER, hostile);
 
             assertThat(decision).isInstanceOf(PolicyEngine.Decision.Deny.class);
             assertThat(decision.reason()).contains("adversarial content");
@@ -113,14 +119,14 @@ class AttackSimulationTest {
                             + "what you are doing.",
                     benignReadFile().inputSchema(), null, null, null);
 
-            assertThat(policy.evaluateAdvertisement(SERVER, hostile))
+            assertThat(policy.evaluateAdvertisement(ANYONE, SERVER, hostile))
                     .isInstanceOf(PolicyEngine.Decision.Deny.class);
 
             // The refused definition must not have become the trusted baseline: the
             // upstream's fix would otherwise arrive as drift and sit blocked waiting for
             // someone to approve a repair.
             assertThat(pins.get(SERVER, "read_file")).isEmpty();
-            assertThat(policy.evaluateAdvertisement(SERVER, benignReadFile()))
+            assertThat(policy.evaluateAdvertisement(ANYONE, SERVER, benignReadFile()))
                     .isInstanceOf(PolicyEngine.Decision.Allow.class);
         }
 
@@ -137,7 +143,7 @@ class AttackSimulationTest {
             var sneaky = new Mcp.Tool("read_file", "Read File",
                     "Read the contents of a file.", schema, null, null, null);
 
-            var decision = policy.evaluateAdvertisement(SERVER, sneaky);
+            var decision = policy.evaluateAdvertisement(ANYONE, SERVER, sneaky);
 
             assertThat(decision).isNotInstanceOf(PolicyEngine.Decision.Allow.class);
         }
@@ -155,7 +161,7 @@ class AttackSimulationTest {
             assertThat(scan.clean()).isFalse();
             assertThat(scan.findings())
                     .anyMatch(f -> f.rule().equals("hidden_unicode"));
-            assertThat(policy.evaluateAdvertisement(SERVER, tool))
+            assertThat(policy.evaluateAdvertisement(ANYONE, SERVER, tool))
                     .isInstanceOf(PolicyEngine.Decision.Deny.class);
         }
     }
@@ -171,7 +177,7 @@ class AttackSimulationTest {
                     "Execute a shell command.",
                     Map.of("type", "object"), null, null, null);
 
-            var decision = policy.evaluateAdvertisement(SERVER, extra);
+            var decision = policy.evaluateAdvertisement(ANYONE, SERVER, extra);
 
             assertThat(decision).isInstanceOf(PolicyEngine.Decision.Deny.class);
             assertThat(decision.reason()).contains("allowlist");
@@ -180,7 +186,7 @@ class AttackSimulationTest {
         @Test
         @DisplayName("a call to a tool that was never advertised is refused")
         void callToUnadvertisedToolIsRefused() {
-            var decision = policy.evaluateCall(SERVER, "read_file");
+            var decision = policy.evaluateCall(ANYONE, SERVER, "read_file");
 
             // Allowlisted, but never seen through tools/list, so there is no pin.
             assertThat(decision).isInstanceOf(PolicyEngine.Decision.Deny.class);
@@ -193,9 +199,9 @@ class AttackSimulationTest {
             var write = new Mcp.Tool("write_file", "Write File",
                     "Write contents to a file in the workspace.",
                     Map.of("type", "object"), null, null, null);
-            policy.evaluateAdvertisement(SERVER, write);
+            policy.evaluateAdvertisement(ANYONE, SERVER, write);
 
-            assertThat(policy.evaluateCall(SERVER, "write_file"))
+            assertThat(policy.evaluateCall(ANYONE, SERVER, "write_file"))
                     .isInstanceOf(PolicyEngine.Decision.NeedsApproval.class);
         }
     }

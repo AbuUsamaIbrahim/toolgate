@@ -69,9 +69,29 @@ public record PolicyBundle(
         /** Per-server policy, keyed by the same server id used in local configuration. */
         Map<String, ServerPolicy> servers,
 
-        List<Reviewed> reviewedTools) {
+        List<Reviewed> reviewedTools,
 
-    public static final int SCHEMA_VERSION = 1;
+        /**
+         * Extra access granted to members of a team, keyed by the group name the identity
+         * provider puts in the token.
+         *
+         * <p>Deliberately additive: {@link #servers} is the floor everyone gets, and a
+         * team entry can only widen it. Allowing a team override to <em>remove</em> access
+         * raises a question with no good answer — which entry wins for somebody in two
+         * teams — and the honest options are "the most permissive" (so the restriction was
+         * never real) or "the most restrictive" (so joining a team can silently take away
+         * access you had yesterday). Union across a caller's teams has one obvious meaning
+         * and reads correctly in an audit: this is what the platform team can do that
+         * everyone else cannot.
+         */
+        Map<String, Map<String, ServerPolicy>> teamPolicies) {
+
+    /**
+     * 1 had no team policies. Both are accepted — a schema bump that invalidates every
+     * published bundle turns a additive feature into a coordinated upgrade.
+     */
+    public static final int SCHEMA_VERSION = 2;
+    public static final java.util.Set<Integer> READABLE_SCHEMA_VERSIONS = java.util.Set.of(1, 2);
 
     public record ServerPolicy(Set<String> allow, Set<String> requireApproval) {
         public ServerPolicy {
@@ -96,13 +116,38 @@ public record PolicyBundle(
                 .findFirst();
     }
 
-    public boolean allows(String serverId, String toolName) {
-        ServerPolicy s = servers == null ? null : servers.get(serverId);
-        return s != null && s.allow().contains(toolName);
+    public boolean allows(String serverId, String toolName, java.util.Set<String> teams) {
+        ServerPolicy base = servers == null ? null : servers.get(serverId);
+        if (base != null && base.allow().contains(toolName)) return true;
+
+        for (ServerPolicy extra : forTeams(serverId, teams)) {
+            if (extra.allow().contains(toolName)) return true;
+        }
+        return false;
     }
 
-    public boolean requiresApproval(String serverId, String toolName) {
-        ServerPolicy s = servers == null ? null : servers.get(serverId);
-        return s != null && s.requireApproval().contains(toolName);
+    public boolean requiresApproval(String serverId, String toolName, java.util.Set<String> teams) {
+        ServerPolicy base = servers == null ? null : servers.get(serverId);
+        if (base != null && base.requireApproval().contains(toolName)) return true;
+
+        // A team that grants extra access can also say that access needs a human. The
+        // reverse — a team removing an approval requirement the base policy set — is not
+        // possible, because that would let team membership weaken a control.
+        for (ServerPolicy extra : forTeams(serverId, teams)) {
+            if (extra.requireApproval().contains(toolName)) return true;
+        }
+        return false;
+    }
+
+    private List<ServerPolicy> forTeams(String serverId, java.util.Set<String> teams) {
+        if (teamPolicies == null || teams == null || teams.isEmpty()) return List.of();
+        List<ServerPolicy> found = new java.util.ArrayList<>();
+        for (String team : teams) {
+            Map<String, ServerPolicy> byServer = teamPolicies.get(team);
+            if (byServer == null) continue;
+            ServerPolicy sp = byServer.get(serverId);
+            if (sp != null) found.add(sp);
+        }
+        return found;
     }
 }

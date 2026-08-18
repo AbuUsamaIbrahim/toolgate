@@ -92,10 +92,10 @@ public class BundleVerifier {
         } catch (Exception e) {
             throw new UntrustedBundleException("bundle payload is not readable", e);
         }
-        if (bundle.schemaVersion() != PolicyBundle.SCHEMA_VERSION) {
+        if (!PolicyBundle.READABLE_SCHEMA_VERSIONS.contains(bundle.schemaVersion())) {
             throw new UntrustedBundleException(
-                    "bundle schema version %d is not supported by this gateway (expects %d)"
-                            .formatted(bundle.schemaVersion(), PolicyBundle.SCHEMA_VERSION));
+                    "bundle schema version %d is not supported by this gateway (reads %s)"
+                            .formatted(bundle.schemaVersion(), PolicyBundle.READABLE_SCHEMA_VERSIONS));
         }
         return new Verified(bundle, acceptedKey);
     }

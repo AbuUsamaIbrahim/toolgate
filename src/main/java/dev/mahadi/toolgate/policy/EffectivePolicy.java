@@ -46,16 +46,16 @@ public class EffectivePolicy {
                 : bundles.current();
     }
 
-    public boolean isAllowed(String serverId, String toolName) {
+    public boolean isAllowed(java.util.Set<String> teams, String serverId, String toolName) {
         if (failedClosed()) return false;
         return bundle()
-                .map(b -> b.allows(serverId, toolName))
+                .map(b -> b.allows(serverId, toolName, teams))
                 .orElseGet(() -> local.isAllowed(serverId, toolName));
     }
 
-    public boolean requiresApproval(String serverId, String toolName) {
+    public boolean requiresApproval(java.util.Set<String> teams, String serverId, String toolName) {
         return bundle()
-                .map(b -> b.requiresApproval(serverId, toolName))
+                .map(b -> b.requiresApproval(serverId, toolName, teams))
                 .orElseGet(() -> local.requiresApproval(serverId, toolName));
     }
 

@@ -93,7 +93,7 @@ public class GatewayController {
             caller = new AccessToken("auth-disabled", Set.of(SCOPE_READ, SCOPE_CALL), null, null);
         }
 
-        return gateway.handle(caller.subject(), request).map(ResponseEntity::ok);
+        return gateway.handle(caller, request).map(ResponseEntity::ok);
     }
 
     private static String requiredScope(String method) {

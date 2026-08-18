@@ -60,7 +60,7 @@ class BundleStoreTest {
 
         assertThat(store.health()).isEqualTo(BundleStore.Health.FRESH);
         assertThat(store.current()).isPresent();
-        assertThat(store.current().get().allows("files", "read_file")).isTrue();
+        assertThat(store.current().get().allows("files", "read_file", java.util.Set.of())).isTrue();
     }
 
     @Test

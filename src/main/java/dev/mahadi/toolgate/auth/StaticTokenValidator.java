@@ -1,7 +1,5 @@
 package dev.mahadi.toolgate.auth;
 
-import org.springframework.stereotype.Component;
-
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -12,10 +10,15 @@ import java.util.Set;
 /**
  * Validates bearer tokens against hashes held in configuration.
  *
- * <p>Adequate for a self-hosted gateway; swap in a JWT or introspection validator when
- * there is a real authorization server to talk to. The interface is the seam.
+ * <p>Adequate for a self-hosted gateway and correct for callers that are not people —
+ * build agents and scheduled jobs have no browser to authenticate through. It should not
+ * be how humans are identified once an identity provider exists: a hash in a file cannot
+ * be revoked without editing every machine, never expires, and produces audit lines that
+ * name a config entry rather than a person.
+ *
+ * <p>Assembled by {@link AuthConfiguration} rather than component-scanned, so that "which
+ * credentials does this gateway accept" has one readable answer in one place.
  */
-@Component
 public class StaticTokenValidator implements TokenValidator {
 
     private final AuthProperties props;

@@ -127,8 +127,14 @@ public class StdioServer implements ApplicationRunner {
      * with. Naming the caller {@code local-stdio} keeps the audit trail honest about
      * where that authority came from.
      */
-    private static String callerIdentity() {
-        return "local-stdio";
+    private static dev.mahadi.toolgate.auth.AccessToken callerIdentity() {
+        // No teams, so a stdio caller gets the base policy only and never a team's extra
+        // access. Team membership comes from an identity provider's group claim, and there
+        // is no token here to carry one — inferring it from the logged-in user would be
+        // the gateway inventing an identity it cannot verify.
+        return new dev.mahadi.toolgate.auth.AccessToken(
+                "local-stdio", java.util.Set.of("tools:read", "tools:call"),
+                java.util.Set.of(), null, null);
     }
 
     private void write(BufferedWriter out, Mcp.Response response) {

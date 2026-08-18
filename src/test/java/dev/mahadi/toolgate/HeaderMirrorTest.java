@@ -26,6 +26,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class HeaderMirrorTest {
 
+    /** A caller with no team membership: the base policy, and nothing extra. */
+    static final dev.mahadi.toolgate.auth.AccessToken ANYONE =
+            new dev.mahadi.toolgate.auth.AccessToken(
+                    "test-caller", java.util.Set.of("tools:read", "tools:call"),
+                    java.util.Set.of(), null, null);
+
     private static final String SERVER = "files";
 
     private ToolPinStore pins;
@@ -61,7 +67,7 @@ class HeaderMirrorTest {
         @Test
         @DisplayName("a definition cannot mirror into Authorization")
         void cannotWriteAuthorization() {
-            var decision = policy.evaluateAdvertisement(SERVER, mirroring("Authorization"));
+            var decision = policy.evaluateAdvertisement(ANYONE, SERVER, mirroring("Authorization"));
 
             assertThat(decision).isInstanceOf(PolicyEngine.Decision.Deny.class);
             assertThat(decision.reason()).contains("x-mcp-header");
@@ -72,7 +78,7 @@ class HeaderMirrorTest {
         void cannotWriteOtherSensitiveHeaders() {
             for (String header : List.of("Cookie", "Host", "X-Forwarded-For",
                     "Proxy-Authorization", "Mcp-Session-Id")) {
-                assertThat(policy.evaluateAdvertisement(SERVER, mirroring(header)))
+                assertThat(policy.evaluateAdvertisement(ANYONE, SERVER, mirroring(header)))
                         .as(header)
                         .isInstanceOf(PolicyEngine.Decision.Deny.class);
             }
@@ -82,7 +88,7 @@ class HeaderMirrorTest {
         @DisplayName("a CRLF in the header name is refused before anything tries to send it")
         void crlfInNameRefused() {
             var decision = policy.evaluateAdvertisement(
-                    SERVER, mirroring("Mcp-Param-X\r\nAuthorization: Bearer stolen"));
+                    ANYONE, SERVER, mirroring("Mcp-Param-X\r\nAuthorization: Bearer stolen"));
 
             assertThat(decision).isInstanceOf(PolicyEngine.Decision.Deny.class);
             var deny = (PolicyEngine.Decision.Deny) decision;
@@ -103,14 +109,14 @@ class HeaderMirrorTest {
                                     Map.of("token", inner)))),
                     null, null, null);
 
-            assertThat(policy.evaluateAdvertisement(SERVER, tool))
+            assertThat(policy.evaluateAdvertisement(ANYONE, SERVER, tool))
                     .isInstanceOf(PolicyEngine.Decision.Deny.class);
         }
 
         @Test
         @DisplayName("the namespace prefix alone is not a header name")
         void emptyNameRefused() {
-            assertThat(policy.evaluateAdvertisement(SERVER, mirroring("Mcp-Param-")))
+            assertThat(policy.evaluateAdvertisement(ANYONE, SERVER, mirroring("Mcp-Param-")))
                     .isInstanceOf(PolicyEngine.Decision.Deny.class);
         }
     }
@@ -124,7 +130,7 @@ class HeaderMirrorTest {
         void namespacedHeaderMirrored() {
             var tool = mirroring("Mcp-Param-Path");
 
-            assertThat(policy.evaluateAdvertisement(SERVER, tool))
+            assertThat(policy.evaluateAdvertisement(ANYONE, SERVER, tool))
                     .isInstanceOf(PolicyEngine.Decision.Allow.class);
             assertThat(policy.mirroredHeaders(SERVER, "read_file", Map.of("path", "/etc/hosts")))
                     .containsEntry("Mcp-Param-Path", "/etc/hosts");
@@ -133,7 +139,7 @@ class HeaderMirrorTest {
         @Test
         @DisplayName("the namespace check is case-insensitive, as header names are")
         void caseInsensitiveNamespace() {
-            assertThat(policy.evaluateAdvertisement(SERVER, mirroring("MCP-PARAM-PATH")))
+            assertThat(policy.evaluateAdvertisement(ANYONE, SERVER, mirroring("MCP-PARAM-PATH")))
                     .isInstanceOf(PolicyEngine.Decision.Allow.class);
         }
     }
@@ -145,7 +151,7 @@ class HeaderMirrorTest {
         @Test
         @DisplayName("a newline in an argument does not become a second header")
         void crlfInValueDropped() {
-            policy.evaluateAdvertisement(SERVER, mirroring("Mcp-Param-Path"));
+            policy.evaluateAdvertisement(ANYONE, SERVER, mirroring("Mcp-Param-Path"));
 
             var headers = policy.mirroredHeaders(SERVER, "read_file",
                     Map.of("path", "ok\r\nAuthorization: Bearer stolen"));
@@ -183,7 +189,7 @@ class HeaderMirrorTest {
         @Test
         @DisplayName("objects and arrays are not header-shaped and are skipped")
         void structuredValuesSkipped() {
-            policy.evaluateAdvertisement(SERVER, mirroring("Mcp-Param-Path"));
+            policy.evaluateAdvertisement(ANYONE, SERVER, mirroring("Mcp-Param-Path"));
 
             assertThat(policy.mirroredHeaders(SERVER, "read_file",
                     Map.of("path", List.of("a", "b")))).isEmpty();
@@ -193,10 +199,10 @@ class HeaderMirrorTest {
     @Test
     @DisplayName("changing a mirror declaration changes the fingerprint, so it drifts")
     void mirrorChangeIsDrift() {
-        assertThat(policy.evaluateAdvertisement(SERVER, mirroring("Mcp-Param-Path")))
+        assertThat(policy.evaluateAdvertisement(ANYONE, SERVER, mirroring("Mcp-Param-Path")))
                 .isInstanceOf(PolicyEngine.Decision.Allow.class);
 
-        var decision = policy.evaluateAdvertisement(SERVER, mirroring("Mcp-Param-Other"));
+        var decision = policy.evaluateAdvertisement(ANYONE, SERVER, mirroring("Mcp-Param-Other"));
 
         assertThat(decision).isInstanceOf(PolicyEngine.Decision.Deny.class);
         assertThat(decision.reason()).contains("changed since it was pinned");

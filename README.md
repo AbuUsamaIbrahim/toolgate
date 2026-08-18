@@ -95,6 +95,7 @@ Toolgate is the missing mechanism.
 | **Drift diff** | An alert an operator has no way to evaluate. Shows exactly which field changed. |
 | **Durable audit trail** | The record of what happened evaporating on the restart that follows the incident. |
 | **Signed policy bundles** | Policy that lives in a file on each developer's laptop, editable by that developer. |
+| **OIDC identity** | Audit lines naming a config entry instead of a person, and credentials that never expire. |
 | **Header-mirror confinement** | `x-mcp-header` letting a tool definition write arbitrary HTTP headers. |
 
 ### Where the filtering happens
@@ -333,6 +334,70 @@ of reviewing once is that the judgement binds every machine, including those tha
 pinned something else. `requireReviewed: true` goes further and refuses any tool nobody has
 looked at.
 
+### Identity: who is actually calling
+
+A SHA-256 hash in a configuration file identifies a *deployment*. It cannot be revoked
+without editing every machine, never expires, and produces audit lines reading
+`example-agent` — which answers "which config entry was used" when the question after an
+incident is "who did this".
+
+Point the gateway at your identity provider and callers become people:
+
+```yaml
+toolgate:
+  auth:
+    resource-uri: https://toolgate.example.com/mcp
+    oidc:
+      issuer: https://login.example.com/realms/engineering
+      audiences: ["https://toolgate.example.com/mcp"]
+      groups-claim: groups
+```
+
+The JWKS endpoint is discovered from the issuer, keys are cached and refreshed, and
+refetches are rate-limited so a stream of tokens bearing unknown key ids cannot be turned
+into a request amplifier aimed at the IdP.
+
+Static tokens still work and still have a job — build agents and cron jobs have no browser
+to authenticate through. Configuring both logs a warning, because a static token beside an
+OIDC token is a shared secret that never expires, and it should be reserved for callers that
+are not people.
+
+**Four things this gets right, each because getting it wrong has shipped somewhere real:**
+
+- **The token's own `alg` is never trusted.** `none` is the famous bypass; the subtler one
+  is accepting HS256 where RS256 was expected, so an attacker signs with the *public* key as
+  the HMAC secret and it verifies. Only asymmetric algorithms are permitted, and the
+  algorithm is matched against the selected key rather than against the header's request.
+- **Keys come only from the configured JWKS.** A `jku` header pointing at an attacker's key
+  set is a total bypass; `kid` selects *among* trusted keys and never introduces one.
+- **The audience is checked.** This is the confused-deputy control. Without it, any token
+  from the same IdP — one minted for the wiki, or for a service an attacker already holds —
+  opens the gateway.
+- **Clock skew is 60 seconds.** Expiry is the only revocation a stateless token has, and
+  widening the window to paper over a clock problem extends the life of every stolen token
+  by exactly as much.
+
+### Policy that differs by team
+
+Identity that does not change what is permitted is just better logging. A bundle can grant
+extra access to a team, keyed by the group claim in the token:
+
+```json
+"servers":      { "files": { "allow": ["read_file"] } },
+"teamPolicies": { "platform": { "files": { "allow": ["send_email"] } } }
+```
+
+Everyone gets `read_file`; only the platform team also sees `send_email`.
+
+Team entries are **additive**, and that is a deliberate restriction. Letting a team override
+*remove* access raises a question with no good answer — which entry wins for somebody in two
+teams? The honest options are "the most permissive", so the restriction was never real, or
+"the most restrictive", so joining a team silently takes away access you had yesterday.
+Union across a caller's teams has one obvious meaning and reads correctly in an audit: this
+is what the platform team can do that everyone else cannot. A team *can* attach an approval
+requirement to the access it grants; it cannot remove one the base policy set, because team
+membership must not be a way to switch a control off.
+
 ### What the distribution layer has to get right
 
 Signing is the easy part. These are the states a real fleet actually spends its time in:
@@ -372,10 +437,9 @@ Worth stating plainly, because a security tool that oversells itself is worse th
 - **The operator credential is a bearer token in a config file.** It is separate from the
   agent's token and defaults to loopback-only, but it is still a static shared secret. A
   deployment with real identity infrastructure should front `/toolgate/**` with it.
-- **Callers are identified by static token hashes.** Workable for one gateway, unworkable
-  for a fleet: you cannot edit a file per person, and an audit line reading `example-agent`
-  names nobody. OIDC against the company IdP is the next increment, and `TokenValidator`
-  exists as an interface for exactly that.
+- **Revocation is bounded by token lifetime.** JWTs are validated offline against the JWKS,
+  so a revoked session stays usable until it expires. Token introspection would close that
+  at the cost of a network call per request; `TokenValidator` is the seam for it.
 - **Nothing detects a developer who simply bypasses the gateway.** Deleting one line of
   MCP client configuration reaches the servers directly. Coverage requires either managed
   client configuration or a control plane that knows which machines have checked in — the

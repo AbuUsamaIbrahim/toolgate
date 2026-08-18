@@ -44,7 +44,7 @@ class BundleSigningTest {
                 Instant.now().minus(1, ChronoUnit.MINUTES), expires,
                 50, false, false,
                 Map.of("files", new PolicyBundle.ServerPolicy(Set.of("read_file"), Set.of())),
-                List.of());
+                List.of(), Map.of());
     }
 
     static byte[] signed(PolicyBundle b, String keyId, KeyPair key) throws Exception {
@@ -60,7 +60,7 @@ class BundleSigningTest {
 
         assertThat(verified.keyId()).isEqualTo("prod-2026");
         assertThat(verified.bundle().sequence()).isEqualTo(1);
-        assertThat(verified.bundle().allows("files", "read_file")).isTrue();
+        assertThat(verified.bundle().allows("files", "read_file", Set.of())).isTrue();
     }
 
     @Test
@@ -78,7 +78,7 @@ class BundleSigningTest {
                 original.approveFirstSighting(), original.requireReviewed(),
                 Map.of("files", new PolicyBundle.ServerPolicy(
                         Set.of("read_file", "exec_shell"), Set.of())),
-                List.of());
+                List.of(), Map.of());
 
         var forged = new BundleEnvelope(envelope.payloadType(),
                 Base64.getEncoder().encodeToString(MAPPER.writeValueAsBytes(widened)),
@@ -165,7 +165,8 @@ class BundleSigningTest {
     @DisplayName("a future schema version is refused rather than half-understood")
     void unknownSchemaRejected() {
         var future = new PolicyBundle(99, 1, "x", Instant.now(),
-                Instant.now().plus(1, ChronoUnit.DAYS), 50, false, false, Map.of(), List.of());
+                Instant.now().plus(1, ChronoUnit.DAYS), 50, false, false,
+                Map.of(), List.of(), Map.of());
 
         assertThatThrownBy(() -> verifier.verify(signed(future, "prod-2026", signing)))
                 .isInstanceOf(BundleVerifier.UntrustedBundleException.class)

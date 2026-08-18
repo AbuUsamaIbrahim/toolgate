@@ -35,6 +35,24 @@ toolgate:
     enabled: true
     resource-uri: http://localhost:8080/mcp
     authorization-server: ""      # advertised via RFC 9728 when set
+    # OIDC. Once this is set, people authenticate with tokens from your identity
+    # provider: short-lived, revocable, and attributable to a name rather than to a
+    # line in a config file. Leave the issuer empty to stay on static tokens.
+    #
+    # The audience check is the confused-deputy control. Without it, any token from
+    # the same IdP — one minted for the wiki, or for a service an attacker already
+    # holds — opens this gateway. It defaults to resource-uri above.
+    oidc:
+      issuer: ""                  # e.g. https://login.example.com/realms/engineering
+      jwks-uri: ""                # discovered from the issuer when empty
+      audiences: []               # defaults to resource-uri
+      clock-skew: 60s             # small on purpose: expiry is a stateless token's only revocation
+      subject-claim: preferred_username
+      groups-claim: groups        # feeds bundle teamPolicies
+
+    # Static tokens. Keep these for callers that are not people — build agents and
+    # scheduled jobs have no browser to authenticate through. A hash here cannot be
+    # revoked without editing every machine and names no person in the audit trail.
     callers:
       example-agent:
         # sha256 of "change-me" — replace before running anywhere real

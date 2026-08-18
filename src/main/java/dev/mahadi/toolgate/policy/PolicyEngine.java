@@ -1,5 +1,6 @@
 package dev.mahadi.toolgate.policy;
 
+import dev.mahadi.toolgate.auth.AccessToken;
 import dev.mahadi.toolgate.integrity.DriftStore;
 import dev.mahadi.toolgate.integrity.ToolFingerprint;
 import dev.mahadi.toolgate.integrity.ToolPinStore;
@@ -61,9 +62,11 @@ public class PolicyEngine {
     /**
      * Evaluates a tool at advertisement time.
      *
+     * @param caller whose token decides which team policies apply; identity is never
+     *               taken from anything the request asserts
      * @param serverId which upstream advertised it; tool names are only unique per server
      */
-    public Decision evaluateAdvertisement(String serverId, Mcp.Tool tool) {
+    public Decision evaluateAdvertisement(AccessToken caller, String serverId, Mcp.Tool tool) {
         // 0. No policy in force. A gateway that cannot say what is permitted must not
         // guess; the alternative is enforcing whatever happens to be cached on the laptop.
         if (props.failedClosed()) {
@@ -72,7 +75,7 @@ public class PolicyEngine {
         }
 
         // 1. Allowlist — deny by default.
-        if (!props.isAllowed(serverId, tool.name())) {
+        if (!props.isAllowed(caller.teams(), serverId, tool.name())) {
             return new Decision.Deny(
                     "tool not in allowlist",
                     List.of("%s/%s".formatted(serverId, tool.name())));
@@ -173,12 +176,12 @@ public class PolicyEngine {
      * happened: a client may call a tool it was never offered, and a gateway that assumes
      * otherwise is trusting the caller to enforce its own restrictions.
      */
-    public Decision evaluateCall(String serverId, String toolName) {
+    public Decision evaluateCall(AccessToken caller, String serverId, String toolName) {
         if (props.failedClosed()) {
             return new Decision.Deny(props.failureReason(),
                     List.of("%s/%s".formatted(serverId, toolName)));
         }
-        if (!props.isAllowed(serverId, toolName)) {
+        if (!props.isAllowed(caller.teams(), serverId, toolName)) {
             return new Decision.Deny(
                     "tool not in allowlist",
                     List.of("%s/%s".formatted(serverId, toolName)));
@@ -188,7 +191,7 @@ public class PolicyEngine {
                     "tool was never advertised through this gateway",
                     List.of("%s/%s".formatted(serverId, toolName)));
         }
-        if (props.requiresApproval(serverId, toolName)) {
+        if (props.requiresApproval(caller.teams(), serverId, toolName)) {
             return new Decision.NeedsApproval("tool is marked as requiring human approval");
         }
         return new Decision.Allow("allowlisted and pinned");

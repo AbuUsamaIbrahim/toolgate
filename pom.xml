@@ -35,6 +35,19 @@
       <artifactId>spring-boot-starter-actuator</artifactId>
     </dependency>
 
+    <!--
+      JWT validation, not hand-rolled. The classic failures here are algorithm confusion
+      (accepting alg:none, or an RS256 public key used as an HMAC secret) and getting key
+      selection from the token instead of from trusted metadata. Nimbus is the library
+      Spring Security itself uses for this, and it enforces the algorithm against the
+      selected key rather than against what the token asked for.
+    -->
+    <dependency>
+      <groupId>com.nimbusds</groupId>
+      <artifactId>nimbus-jose-jwt</artifactId>
+      <version>10.0.2</version>
+    </dependency>
+
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
