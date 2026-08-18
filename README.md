@@ -500,6 +500,13 @@ produced, not here. A compromised control plane can withhold policy or serve a s
 which the sequence floor and the staleness deadline on each gateway already bound — but it
 cannot write a new one.
 
+Fleet state lives in Postgres when a database is configured, and in memory otherwise. That
+choice decides how many replicas the control plane can have: with the in-memory registry,
+two pods behind one Service each receive a fraction of the check-ins, so the coverage report
+answers differently depending on which pod you reach — reporting machines as unmonitored
+when they are not, which is worse than no report, because people act on it once and then
+stop believing it.
+
 Kubernetes manifests, with the reasoning for each object, are in [`k8s/`](k8s/).
 
 ### Approvals with a second person in them
@@ -604,8 +611,9 @@ Worth stating plainly, because a security tool that oversells itself is worse th
   which went quiet; they cannot show someone who never installed one, and they can be
   faked by anyone willing to lie about their own machine. Closing that needs managed client
   configuration through MDM, which is outside this project.
-- **The fleet registry is in memory.** One replica only, and a restart forgets who has
-  checked in. Moving it to a database is what allows more than one.
+- **Fleet state needs Postgres to run more than one replica.** Without a database
+  configured the registry is in memory, which is correct and forces `replicas: 1`; the
+  gateway logs a warning saying so.
 - **The bundled token validator is static.** It checks hashes from configuration, which
   suits a self-hosted gateway. A deployment with a real OAuth 2.1 authorization server
   should implement `TokenValidator` against JWT verification or token introspection — the

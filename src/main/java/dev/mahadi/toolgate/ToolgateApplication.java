@@ -3,11 +3,23 @@ package dev.mahadi.toolgate;
 import dev.mahadi.toolgate.cli.BundleTool;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration;
+import org.springframework.boot.autoconfigure.jdbc.JdbcClientAutoConfiguration;
+import org.springframework.boot.autoconfigure.jdbc.JdbcTemplateAutoConfiguration;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 
 import java.util.Arrays;
 
-@SpringBootApplication
+// JDBC autoconfiguration is excluded deliberately. It builds a connection pool whenever
+// a pooling library is on the classpath, whether or not a URL was configured, which would
+// stop the gateway starting on any machine that does not want a database — which is most
+// of them. FleetRegistryConfiguration owns the DataSource instead.
+@SpringBootApplication(exclude = {
+        DataSourceAutoConfiguration.class,
+        DataSourceTransactionManagerAutoConfiguration.class,
+        JdbcTemplateAutoConfiguration.class,
+        JdbcClientAutoConfiguration.class})
 @ConfigurationPropertiesScan
 public class ToolgateApplication {
 

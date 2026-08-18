@@ -18,7 +18,7 @@ class FleetRegistryTest {
 
     @BeforeEach
     void setUp() {
-        fleet = new FleetRegistry();
+        fleet = new InMemoryFleetRegistry();
     }
 
     @Test

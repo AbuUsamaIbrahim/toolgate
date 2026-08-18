@@ -36,6 +36,25 @@ public class ControlProperties {
      */
     private Duration silentAfter = Duration.ofMinutes(30);
 
+    /**
+     * Server side: JDBC URL for fleet state. Empty means in memory, which means one
+     * replica — see {@link FleetRegistry}.
+     */
+    private String databaseUrl = "";
+    private String databaseUser = "";
+    private String databasePassword = "";
+
+    public String getDatabaseUrl() { return databaseUrl; }
+    public void setDatabaseUrl(String databaseUrl) { this.databaseUrl = databaseUrl; }
+    public String getDatabaseUser() { return databaseUser; }
+    public void setDatabaseUser(String databaseUser) { this.databaseUser = databaseUser; }
+    public String getDatabasePassword() { return databasePassword; }
+    public void setDatabasePassword(String databasePassword) { this.databasePassword = databasePassword; }
+
+    public boolean databaseConfigured() {
+        return databaseUrl != null && !databaseUrl.isBlank();
+    }
+
     public String getUrl() { return url; }
     public void setUrl(String url) { this.url = url; }
     public Duration getCheckInInterval() { return checkInInterval; }

@@ -6,16 +6,18 @@ metadata:
   labels:
     app.kubernetes.io/name: toolgate-control
 spec:
-  # One replica, on purpose. The fleet registry is in memory, so a second pod would hold
-  # half the check-ins and the coverage report would depend on which one you reached.
-  # This is the constraint that moving state into Postgres removes.
-  replicas: 1
+  # Three replicas are safe now that fleet state lives in Postgres rather than in each
+  # pod's memory. Before that, two pods each held part of the fleet and the coverage
+  # report contradicted itself depending on which one answered — see k8s/postgres.yaml.
+  replicas: 3
   strategy:
-    # Recreate, not RollingUpdate, for the same reason: a rolling update briefly runs two
-    # pods. Costs a few seconds of downtime on deploy, which is acceptable here because a
-    # missed check-in is retried and shows as nothing worse than a slightly older
-    # "last seen".
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      # Never fewer than the desired count during a deploy: add one, wait for it to pass
+      # readiness, then retire an old one. Costs one pod's worth of extra capacity for
+      # the duration, and buys a deploy with no reduction in service.
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: toolgate-control

@@ -10,6 +10,7 @@ objects are the thing worth understanding first.
 ```bash
 kubectl apply -f k8s/namespace.yaml
 kubectl -n toolgate create secret generic toolgate-bundle --from-file=bundle.json=./bundle.json
+kubectl apply -f k8s/postgres.yaml
 kubectl apply -f k8s/configmap.yaml -f k8s/deployment.yaml -f k8s/service.yaml
 kubectl -n toolgate rollout status deploy/toolgate-control
 kubectl -n toolgate port-forward svc/toolgate-control 8090:80
@@ -38,12 +39,26 @@ base64-encoded at rest unless the cluster has encryption-at-rest configured; it 
 release pipeline, someone's laptop with a hardware key. A control plane that can sign policy
 is a control plane whose compromise rewrites policy. It only serves bytes it cannot forge.
 
-**Deployment, `replicas: 1`, `strategy: Recreate`.** Both are deliberate and both are
-temporary. The fleet registry is in memory, so two replicas would each hold half the
-check-ins and the coverage report would depend on which pod you hit. `Recreate` rather than
-`RollingUpdate` because with in-memory state a rolling update briefly runs two versions,
-which has the same problem. Moving the registry into Postgres is what unlocks
-`replicas: 3` — and that is the next exercise.
+**Deployment, `replicas: 3`, `RollingUpdate` with `maxUnavailable: 0`.** This was
+`replicas: 1` and `Recreate` until fleet state moved into Postgres, and the reason is worth
+keeping: with the registry in memory, two pods behind one Service each received a fraction
+of the check-ins, so the coverage report returned a different answer depending on which pod
+answered — reporting machines as unmonitored when they were not.
+
+`maxUnavailable: 0` with `maxSurge: 1` means a deploy adds a pod, waits for it to pass
+readiness, then retires an old one. It costs one pod's worth of extra capacity during the
+rollout and buys a deploy with no reduction in service.
+
+**Postgres** (`k8s/postgres.yaml`) is a Deployment with `Recreate` and a `ReadWriteOnce`
+PVC — a rolling update would try to start a second pod while the first still holds the
+volume, and the new one would sit `Pending` with a `FailedAttachVolume` event. That RWO
+constraint is exactly why StatefulSets exist: they give each replica its own volume and a
+stable identity, which is what you need the moment you want more than one database pod.
+One is enough here, and pretending otherwise would be theatre.
+
+Its readiness probe runs `pg_isready` rather than checking the port, because Postgres
+accepts connections while it is still recovering — a TCP check reports ready too early and
+the first queries fail.
 
 **Probes.** These are worth getting right rather than copying:
 

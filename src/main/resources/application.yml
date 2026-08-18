@@ -191,6 +191,13 @@ toolgate:
     bundle-file: ""               # server side only
     silent-after: 30m             # generous: a closed lid is not a coverage gap
 
+    # Server side: where fleet state lives. Empty means in memory, which means
+    # exactly one replica — with more, each pod holds part of the fleet and the
+    # coverage report contradicts itself between requests.
+    database-url: ""              # e.g. jdbc:postgresql://postgres:5432/toolgate
+    database-user: ""
+    database-password: ""         # from a secret via TOOLGATE_CONTROL_DATABASEPASSWORD
+
   # -------------------------------------------------------------------------
   # Slack approvals. A blocked call posts a message with Approve / Deny
   # buttons into a channel of the people allowed to decide.
