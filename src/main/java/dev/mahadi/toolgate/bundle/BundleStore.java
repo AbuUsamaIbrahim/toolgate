@@ -196,10 +196,19 @@ public class BundleStore {
     private byte[] fetch() throws Exception {
         String source = props.getSource();
         if (source.startsWith("http://") || source.startsWith("https://")) {
-            HttpResponse<byte[]> response = http.send(
-                    HttpRequest.newBuilder(URI.create(source))
-                            .timeout(Duration.ofSeconds(20))
-                            .GET().build(),
+            var request = HttpRequest.newBuilder(URI.create(source))
+                    .timeout(Duration.ofSeconds(20))
+                    .GET();
+
+            // The bundle is signed, so a credential here buys confidentiality rather than
+            // integrity — nobody can forge policy by intercepting this. It still matters:
+            // the bundle is a precise description of which tools are reachable and which
+            // need a human, which is a useful thing for an attacker to read before
+            // deciding what to try.
+            String token = controlToken();
+            if (!token.isEmpty()) request.header("Authorization", "Bearer " + token);
+
+            HttpResponse<byte[]> response = http.send(request.build(),
                     HttpResponse.BodyHandlers.ofByteArray());
             if (response.statusCode() != 200) {
                 throw new IllegalStateException("HTTP " + response.statusCode());
@@ -207,6 +216,16 @@ public class BundleStore {
             return response.body();
         }
         return Files.readAllBytes(FilePaths.expandUser(source));
+    }
+
+    /**
+     * From the environment, not configuration: on a developer machine this is whatever the
+     * login flow deposited and it is rotated every few hours. A file that has to be
+     * rewritten that often would be rewritten wrongly.
+     */
+    private static String controlToken() {
+        String t = System.getenv("TOOLGATE_CONTROL_TOKEN");
+        return t == null ? "" : t.trim();
     }
 
     private Path cachePath() {

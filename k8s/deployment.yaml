@@ -1,0 +1,141 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: toolgate-control
+  namespace: toolgate
+  labels:
+    app.kubernetes.io/name: toolgate-control
+spec:
+  # One replica, on purpose. The fleet registry is in memory, so a second pod would hold
+  # half the check-ins and the coverage report would depend on which one you reached.
+  # This is the constraint that moving state into Postgres removes.
+  replicas: 1
+  strategy:
+    # Recreate, not RollingUpdate, for the same reason: a rolling update briefly runs two
+    # pods. Costs a few seconds of downtime on deploy, which is acceptable here because a
+    # missed check-in is retried and shows as nothing worse than a slightly older
+    # "last seen".
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: toolgate-control
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: toolgate-control
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "8090"
+    spec:
+      # SIGTERM, then this long to finish in-flight work before SIGKILL. Spring's graceful
+      # shutdown drains within it; ignoring SIGTERM is how you get exit 143 and dropped
+      # requests on every deploy.
+      terminationGracePeriodSeconds: 30
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: toolgate
+          image: toolgate:dev
+          # kind loads images with `kind load docker-image`, so there is nothing to pull.
+          # Never on a real cluster, where it hides an image that failed to publish.
+          imagePullPolicy: IfNotPresent
+
+          # Same image as the gateway, different arguments. The control plane is not a
+          # separate artifact, so the bundle types used to serve policy here and verify it
+          # on a laptop cannot drift apart.
+          args:
+            - --spring.profiles.active=control
+            - --spring.config.additional-location=/config/
+            - --server.port=8090
+
+          ports:
+            - name: http
+              containerPort: 8090
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          resources:
+            # requests is what the scheduler reserves; limits is what the kernel enforces.
+            # Memory over the limit is not throttled — the process is OOM-killed, which
+            # appears as exit code 137 and CrashLoopBackOff. CPU over the limit is
+            # throttled, so it looks like unexplained latency instead.
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 768Mi
+              # No CPU limit on purpose: throttling a JVM during startup makes it slow to
+              # become ready, which then trips the very probes meant to protect it.
+
+          startupProbe:
+            # Buys the JVM time to boot without a slow start being mistaken for a crash.
+            # Until this passes, the liveness probe is not run at all.
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30      # up to 150s
+
+          readinessProbe:
+            # Decides whether the Service routes here. Failing it removes the pod from
+            # endpoints without killing it.
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+
+          livenessProbe:
+            # Decides whether the kubelet KILLS the container, so it must check only
+            # "is this process wedged" and never a dependency. A liveness probe that
+            # fails when something downstream is down turns their outage into a restart
+            # loop that makes it worse.
+            #
+            # Note this is /liveness and not /actuator/health — the latter reports DOWN
+            # when policy is stale, which is a state to look at, not one to respond to by
+            # killing the process and losing the fleet registry.
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 20
+            failureThreshold: 3
+
+          lifecycle:
+            preStop:
+              exec:
+                # Endpoint removal and SIGTERM happen concurrently, so a request can
+                # arrive after shutdown has begun. This pause lets the removal propagate
+                # through kube-proxy first.
+                command: ["/bin/sh", "-c", "sleep 5"]
+
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: bundle
+              mountPath: /etc/toolgate
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: config
+          configMap:
+            name: toolgate-control-config
+        - name: bundle
+          secret:
+            secretName: toolgate-bundle
+        - name: tmp
+          # Required because the root filesystem is read-only and the JVM writes to /tmp.
+          emptyDir: {}

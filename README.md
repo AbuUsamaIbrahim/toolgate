@@ -97,6 +97,7 @@ Toolgate is the missing mechanism.
 | **Signed policy bundles** | Policy that lives in a file on each developer's laptop, editable by that developer. |
 | **OIDC identity** | Audit lines naming a config entry instead of a person, and credentials that never expire. |
 | **Metrics and OTLP export** | A gateway that answers every request promptly while governing nothing, and nobody notices. |
+| **Fleet check-in** | Nobody knowing which machines are actually enforcing policy, or which quietly stopped. |
 | **Header-mirror confinement** | `x-mcp-header` letting a tool definition write arbitrary HTTP headers. |
 
 ### Where the filtering happens
@@ -452,6 +453,54 @@ that disk can rewrite the record of what they did. A copy somewhere the caller d
 control is the difference between a log and evidence. (Tailing the file with Fluent Bit or
 Vector is an equally good way to get that, and needs no code at all.)
 
+### Coverage: who is actually running this
+
+Signed bundles make policy authoritative *on the machines that run the gateway*. They say
+nothing about the machines that do not, and deleting one line of MCP client configuration
+reaches every upstream directly — silently, with no error anywhere.
+
+The control plane closes half of that. It runs from the same image with a different profile,
+serves the signed bundle, and records who checked in:
+
+```bash
+java -jar toolgate.jar --spring.profiles.active=control      --server.port=8090          # toolgate.control.bundle-file points at the signed bundle
+```
+
+Gateways report in with `toolgate.control.url` set. Deliberately thin: who (from their
+token), which machine, which build, which policy sequence, and whether that policy is
+healthy. **Not** what tools were called or by whom — the audit trail already answers that
+and goes somewhere designed for it. A coverage mechanism that becomes a developer-activity
+feed is a different product, and one people are right to resent.
+
+```
+published bundle sequence: 200
+gateways reporting: 3
+
+STATUS     WHO                        MACHINE            BUNDLE   LAST SEEN
+DEGRADED   carol@example.com          carol-mbp          200      2m ago
+BEHIND     bob@example.com            bob-mbp            150      1m ago
+HEALTHY    alice@example.com          alice-mbp          200      30s ago
+```
+
+Sorted worst-first, because a coverage report sorted alphabetically is one nobody reads to
+the bottom.
+
+**Be clear about what this proves.** Identity comes from the caller's OIDC token, so a
+report is attributed to a person and one developer cannot manufacture coverage for another.
+But the list only shows gateways that *reported*. It cannot show someone who never installed
+one — that needs comparing against an IdP or MDM roster, which happens outside this service,
+because a coverage tool has no business holding a copy of the org chart. And someone can
+still fake their own check-ins. That is a deliberate act of deception rather than an
+unedited config file, which is a different problem with different remedies. This raises the
+cost of bypass; it does not close it.
+
+The control plane serves bytes it cannot forge: the signing key lives wherever bundles are
+produced, not here. A compromised control plane can withhold policy or serve a stale one —
+which the sequence floor and the staleness deadline on each gateway already bound — but it
+cannot write a new one.
+
+Kubernetes manifests, with the reasoning for each object, are in [`k8s/`](k8s/).
+
 ### What the distribution layer has to get right
 
 Signing is the easy part. These are the states a real fleet actually spends its time in:
@@ -494,10 +543,12 @@ Worth stating plainly, because a security tool that oversells itself is worse th
 - **Revocation is bounded by token lifetime.** JWTs are validated offline against the JWKS,
   so a revoked session stays usable until it expires. Token introspection would close that
   at the cost of a network call per request; `TokenValidator` is the seam for it.
-- **Nothing detects a developer who simply bypasses the gateway.** Deleting one line of
-  MCP client configuration reaches the servers directly. Coverage requires either managed
-  client configuration or a control plane that knows which machines have checked in — the
-  bundle mechanism above is the half of that problem that needs no server.
+- **Coverage is reported, not enforced.** Check-ins show which gateways are running and
+  which went quiet; they cannot show someone who never installed one, and they can be
+  faked by anyone willing to lie about their own machine. Closing that needs managed client
+  configuration through MDM, which is outside this project.
+- **The fleet registry is in memory.** One replica only, and a restart forgets who has
+  checked in. Moving it to a database is what allows more than one.
 - **The bundled token validator is static.** It checks hashes from configuration, which
   suits a self-hosted gateway. A deployment with a real OAuth 2.1 authorization server
   should implement `TokenValidator` against JWT verification or token introspection — the

@@ -172,6 +172,25 @@ toolgate:
     service-instance-id: ""       # defaults to the hostname
     timeout: 10s
 
+  # -------------------------------------------------------------------------
+  # Control plane.
+  #
+  # Sidecar side: set `url` and this gateway reports in — who, which machine,
+  # which build, which policy sequence, and whether that policy is healthy.
+  # Nothing about what tools were called; the audit trail already answers that
+  # and goes somewhere designed for it. A coverage mechanism that becomes a
+  # developer-activity feed is a different product.
+  #
+  # Server side (profile `control`): set `bundle-file` to what it should serve.
+  # Same image, different args — see the Kubernetes manifests.
+  # -------------------------------------------------------------------------
+  control:
+    url: ""                       # e.g. https://toolgate-control.internal
+    check-in-interval: 5m
+    instance-id: ""               # defaults to the hostname
+    bundle-file: ""               # server side only
+    silent-after: 30m             # generous: a closed lid is not a coverage gap
+
   block-threshold: 50
   approve-first-sighting: false
   # Upstreams. None by default — configure your own. An upstream is reached either

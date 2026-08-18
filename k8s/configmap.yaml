@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: toolgate-control-config
+  namespace: toolgate
+data:
+  # Mounted at /config/application.yml. Spring picks it up via
+  # SPRING_CONFIG_ADDITIONAL_LOCATION, so it layers over the defaults baked into the
+  # image rather than replacing them — the shipped defaults stay the floor.
+  application.yml: |
+    toolgate:
+      auth:
+        enabled: true
+        resource-uri: http://toolgate-control.toolgate.svc.cluster.local/control
+        oidc:
+          # Point this at your identity provider. Empty means no OIDC, and with no static
+          # callers either that means every request is refused — which is the right
+          # failure for a service that has not been told who may talk to it.
+          issuer: ""
+          audiences:
+            - http://toolgate-control.toolgate.svc.cluster.local/control
+        callers: {}
+
+      control:
+        # The Secret is mounted here read-only.
+        bundle-file: /etc/toolgate/bundle.json
+        silent-after: 30m
+
+      # The control plane serves policy; it does not proxy MCP traffic itself.
+      servers: {}
+      bundle:
+        source: ""
+      operator:
+        enabled: false
+
+    management:
+      endpoints:
+        web:
+          exposure:
+            include: health, info, prometheus
+      endpoint:
+        health:
+          # Split liveness and readiness into separate endpoints. Off by default in
+          # Spring Boot outside a detected Kubernetes environment; being explicit means
+          # the probes below work the same way when run locally.
+          probes:
+            enabled: true
+          show-details: always
+
+    server:
+      shutdown: graceful
