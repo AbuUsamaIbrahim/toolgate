@@ -10,6 +10,9 @@ import dev.mahadi.toolgate.integrity.DriftStore;
 import dev.mahadi.toolgate.integrity.ToolPinStore;
 import dev.mahadi.toolgate.protocol.Mcp;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
+import reactor.core.publisher.Flux;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -54,12 +57,51 @@ public class GatewayController {
         this.authProps = authProps;
     }
 
+    /**
+     * This revision removed the GET stream endpoint and protocol-level sessions.
+     * A client one revision behind will try both, and the spec says to answer 405 rather
+     * than 404 — 404 would look like a server that does not host MCP at all, sending the
+     * client down a legacy-transport fallback that will not work either.
+     */
+    @RequestMapping(path = "/mcp", method = {RequestMethod.GET, RequestMethod.DELETE})
+    public ResponseEntity<?> removedMethods() {
+        return ResponseEntity.status(405).body(Map.of(
+                "error", "this revision defines only POST on the MCP endpoint",
+                "protocolVersion", Mcp.PROTOCOL_VERSION));
+    }
+
     /** The MCP endpoint an agent points at instead of the real servers. */
-    @PostMapping(path = "/mcp", consumes = "application/json", produces = "application/json")
-    public Mono<ResponseEntity<Mcp.Response>> mcp(
+    @PostMapping(path = "/mcp", consumes = "application/json")
+    public Mono<ResponseEntity<?>> mcp(
             @RequestBody Mcp.Request request,
             @RequestHeader(value = "MCP-Protocol-Version", required = false) String version,
+            @RequestHeader(value = "Origin", required = false) String origin,
+            @RequestHeader(value = "Mcp-Method", required = false) String mcpMethod,
+            @RequestHeader(value = "Mcp-Name", required = false) String mcpName,
             @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization) {
+
+        // Origin first, and as a bare 403: a DNS-rebinding request from a hostile page
+        // should never become an MCP message at all, let alone one that is authenticated
+        // and audited as a caller.
+        var originRejection = HttpTransportRules.checkOrigin(origin, authProps.getAllowedOrigins());
+        if (originRejection.isPresent()) {
+            audit.record("browser", "-", "-", request.method(), AuditLog.Outcome.DENIED,
+                    originRejection.get().message(), List.of("origin=" + origin));
+            return Mono.just(ResponseEntity.status(403).body(Map.of(
+                    "error", originRejection.get().message())));
+        }
+
+        // Headers that disagree with the body are a request built to be judged by one
+        // component and executed by another — and this gateway is exactly the component
+        // the specification has in mind when it requires this check.
+        var headerRejection = HttpTransportRules.checkMirroredHeaders(request, mcpMethod, mcpName);
+        if (headerRejection.isPresent()) {
+            audit.record("-", "-", "-", request.method(), AuditLog.Outcome.DENIED,
+                    headerRejection.get().message(),
+                    List.of("mcpMethod=" + mcpMethod, "mcpName=" + mcpName));
+            return Mono.just(ResponseEntity.badRequest().body(Mcp.Response.error(request.id(),
+                    headerRejection.get().jsonRpcCode(), headerRejection.get().message(), null)));
+        }
 
         if (version != null && !Mcp.PROTOCOL_VERSION.equals(version)) {
             return Mono.just(ResponseEntity.ok(Mcp.Response.error(request.id(),
@@ -93,7 +135,47 @@ public class GatewayController {
             caller = new AccessToken("auth-disabled", Set.of(SCOPE_READ, SCOPE_CALL), null, null);
         }
 
-        return gateway.handle(caller, request).map(ResponseEntity::ok);
+        // A subscription's response IS its stream: it stays open and carries the
+        // notifications the client opted in to, and closing it is how the client cancels.
+        if (Mcp.METHOD_SUBSCRIPTIONS_LISTEN.equals(request.method())) {
+            return Mono.just(subscriptionStream(caller, request));
+        }
+
+        return gateway.handle(caller, request).map(r -> ResponseEntity.ok((Object) r));
+    }
+
+    /**
+     * Serves a {@code subscriptions/listen} as a long-lived SSE stream.
+     *
+     * <p>Two headers matter more than they look. {@code X-Accel-Buffering: no} stops a
+     * reverse proxy accumulating events and delivering them in a batch, which would make a
+     * change notification arrive long after the change. And a periodic comment line keeps
+     * intermediaries from closing an idle stream — a subscription that is quiet for ten
+     * minutes because nothing changed is working correctly, and should not be mistaken for
+     * a dead connection.
+     *
+     * <p>Cancellation needs no message: the client closes the stream, the publisher is
+     * cancelled, and the upstream subscriptions are torn down in {@code doFinally}.
+     */
+    private ResponseEntity<?> subscriptionStream(AccessToken caller, Mcp.Request request) {
+        String clientId = String.valueOf(request.id());
+
+        Flux<ServerSentEvent<Object>> events = Flux.<ServerSentEvent<Object>>create(sink -> {
+                    gateway.streamSubscription(caller, request,
+                            message -> sink.next(ServerSentEvent.builder(message).build()));
+                    sink.onCancel(() -> gateway.cancelSubscription(clientId));
+                    sink.onDispose(() -> gateway.cancelSubscription(clientId));
+                })
+                // Comment-only events. The SSE specification says a line beginning with a
+                // colon carries no data and clients must ignore it.
+                .mergeWith(Flux.interval(java.time.Duration.ofSeconds(20))
+                        .map(t -> ServerSentEvent.<Object>builder().comment("keep-alive").build()));
+
+        return ResponseEntity.ok()
+                .contentType(MediaType.TEXT_EVENT_STREAM)
+                .header("X-Accel-Buffering", "no")
+                .header(HttpHeaders.CACHE_CONTROL, "no-cache")
+                .body(events);
     }
 
     private static String requiredScope(String method) {

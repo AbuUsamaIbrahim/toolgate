@@ -335,10 +335,11 @@ to the original long-lived request, which is how a client tells a clean end from
 transport. The gateway only sends it once *every* upstream has closed; until then the
 subscription is still being served, just by fewer servers.
 
-**Only stdio carries notifications.** Streamable HTTP delivers server-initiated messages
-over SSE, which this gateway does not implement — so over HTTP they never arrive at all.
-That is stated here rather than left to be discovered, because "notifications silently
-never happen" is a bad thing to learn during an incident.
+**Both transports carry notifications.** Over stdio everything shares one channel, so each
+message carries the subscription id. Over Streamable HTTP a `subscriptions/listen` response
+*is* an SSE stream that stays open, so each subscription has its own — but the id is
+rewritten on both, because the message still carries it and clients correlate on that field
+regardless of which stream it arrived on.
 
 Writes to the client are synchronised across the response and notification paths. A
 notification arriving mid-response would otherwise interleave two JSON documents on one
@@ -391,6 +392,46 @@ it is about *who is being asked* rather than what the text scores.
 Host allowlists are per-machine configuration rather than bundle policy for now. A
 fleet-wide list of places users may be sent is a decision worth taking deliberately rather
 than inheriting from a schema bump.
+
+### The HTTP transport's own security rules
+
+Two requirements in the Streamable HTTP binding exist for security rather than framing, and
+both are checked.
+
+**Origin validation, against DNS rebinding.** A page on the open web can point a name it
+controls at `127.0.0.1` and have the browser make requests to a gateway on the user's own
+machine. The browser sends them willingly; `Origin` is the only thing that distinguishes
+them from the agent. An unrecognised one gets a bare 403, so the request never becomes an
+MCP message at all — let alone an authenticated, audited one. Absent is fine, because a
+command-line agent has no reason to send it and requiring it would break every one of them.
+
+```yaml
+toolgate:
+  auth:
+    allowed-origins: ["http://localhost:3000"]   # empty means no browser at all
+```
+
+**Headers must agree with the body.** This revision mirrors `method` and the tool or
+resource name into `Mcp-Method` and `Mcp-Name` so intermediaries can route without parsing
+the body — and then requires servers to check the two agree, because otherwise *"a load
+balancer routing on the header value while the MCP server executes based on the body
+value"* disagree about what the request is.
+
+That warning is about something sitting between client and server, which is exactly what
+this gateway is. A request with `Mcp-Name: read_file` and a body calling
+`delete_everything` is built to be judged by one component and executed by another:
+
+```
+Mcp-Name says read_file, body says delete_everything -> code -32020 (HeaderMismatch)
+```
+
+Base64-sentinel values are decoded before comparison, since otherwise any name could bypass
+the check by being encoded. Absent headers are allowed — a header that is not there cannot
+desync anything, and refusing clients one revision behind helps nobody.
+
+`GET` and `DELETE` on the MCP endpoint answer **405**, not 404. This revision removed the GET
+stream and protocol-level sessions, and a 404 would look like a host that does not serve MCP
+at all, sending an older client down a legacy fallback that will not work either.
 
 ## Authentication
 

@@ -67,61 +67,7 @@ public class StdioServer implements ApplicationRunner {
         this.gate = gate;
     }
 
-    /**
-     * Forwards approved server-initiated notifications to the client.
-     *
-     * <p>Only stdio can do this. The HTTP endpoint is request/response, so a notification
-     * arriving while an agent is connected over HTTP has nowhere to go — see the README.
-     * Writes are synchronised with the response path, because a notification arriving
-     * mid-response would otherwise interleave two JSON documents on one line and break
-     * framing for everything after it.
-     */
-    private void forwardNotification(BufferedWriter out, String serverId, Mcp.Request notification) {
-        var verdict = gate.evaluate(serverId, notification);
-        if (!(verdict instanceof dev.mahadi.toolgate.gateway.NotificationGate.Verdict.Forward f)) {
-            return;
-        }
 
-        Mcp.Request outbound = f.clientSubscriptionId() == null
-                ? notification
-                : withSubscriptionId(notification, f.clientSubscriptionId());
-
-        try {
-            synchronized (out) {
-                out.write(mapper.writeValueAsString(outbound));
-                out.write('\n');
-                out.flush();
-            }
-        } catch (Exception e) {
-            log.warn("failed forwarding {} from {}: {}",
-                    notification.method(), serverId, e.toString());
-        }
-    }
-
-    /**
-     * Replaces the subscription id with the one the client issued.
-     *
-     * <p>The upstream's id is meaningless to the client and dangerous to relay: a client
-     * running two subscriptions would otherwise be one hostile server away from having
-     * notifications delivered into the wrong stream.
-     */
-    private static Mcp.Request withSubscriptionId(Mcp.Request notification, String clientId) {
-        java.util.Map<String, Object> params =
-                new java.util.LinkedHashMap<>(notification.params() == null
-                        ? java.util.Map.of() : notification.params());
-
-        java.util.Map<String, Object> meta =
-                params.get("_meta") instanceof java.util.Map<?, ?> existing
-                        ? new java.util.LinkedHashMap<>(
-                                (java.util.Map<String, Object>) existing)
-                        : new java.util.LinkedHashMap<>();
-
-        meta.put(dev.mahadi.toolgate.gateway.NotificationGate.SUBSCRIPTION_ID, clientId);
-        params.put("_meta", meta);
-
-        return new Mcp.Request(notification.jsonrpc(), null, notification.method(),
-                params, notification._meta());
-    }
 
     @Override
     public void run(ApplicationArguments args) throws Exception {
@@ -137,12 +83,21 @@ public class StdioServer implements ApplicationRunner {
                      new OutputStreamWriter(protocolOut, StandardCharsets.UTF_8))) {
 
             // Only now is there somewhere to write, so this is where the listener goes.
-            upstream.onNotification((serverId, notification) ->
-                    forwardNotification(out, serverId, notification));
-
-            // Graceful closure of a subscription arrives as a response to a request the
-            // client is still waiting on, so it needs the same channel.
-            gateway.onOutOfBandResponse(response -> write(out, response));
+            // Anything arriving out of band — a notification on a subscription, or a
+            // graceful closure — goes to the one channel stdio has. The gateway has
+            // already decided whether to send it and rewritten the subscription id; this
+            // transport decides only how to write it.
+            gateway.onOutOfBandMessage((clientSubscriptionId, message) -> {
+                try {
+                    synchronized (out) {
+                        out.write(mapper.writeValueAsString(message));
+                        out.write('\n');
+                        out.flush();
+                    }
+                } catch (Exception e) {
+                    log.warn("failed writing an out-of-band message: {}", e.toString());
+                }
+            });
 
             log.info("toolgate listening on stdio");
 

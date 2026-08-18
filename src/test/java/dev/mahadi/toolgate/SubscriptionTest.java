@@ -245,6 +245,54 @@ class SubscriptionTest {
     }
 
     @Nested
+    @DisplayName("Id rewriting, on every transport")
+    class Rewriting {
+
+        @Test
+        @DisplayName("the client's id replaces the upstream's")
+        void idReplaced() {
+            var notification = onStream(
+                    "notifications/resources/updated", "tg-sub-client-99-A", "file:///a.md");
+
+            var rewritten = dev.mahadi.toolgate.gateway.GatewayService
+                    .withSubscriptionId(notification, "client-99");
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> meta =
+                    (Map<String, Object>) rewritten.params().get("_meta");
+            assertThat(meta.get(NotificationGate.SUBSCRIPTION_ID)).isEqualTo("client-99");
+        }
+
+        @Test
+        @DisplayName("everything else about the notification survives")
+        void restOfMessageSurvives() {
+            var notification = onStream(
+                    "notifications/resources/updated", "up-1", "file:///a.md");
+
+            var rewritten = dev.mahadi.toolgate.gateway.GatewayService
+                    .withSubscriptionId(notification, "client-1");
+
+            assertThat(rewritten.method()).isEqualTo("notifications/resources/updated");
+            assertThat(rewritten.params().get("uri")).isEqualTo("file:///a.md");
+            assertThat(rewritten.id()).isNull();      // still a notification
+        }
+
+        @Test
+        @DisplayName("a notification with no _meta gains one")
+        void metaCreatedWhenAbsent() {
+            var bare = new Mcp.Request("2.0", null, "notifications/tools/list_changed",
+                    Map.of(), Map.of());
+
+            var rewritten = dev.mahadi.toolgate.gateway.GatewayService
+                    .withSubscriptionId(bare, "client-1");
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> meta = (Map<String, Object>) rewritten.params().get("_meta");
+            assertThat(meta.get(NotificationGate.SUBSCRIPTION_ID)).isEqualTo("client-1");
+        }
+    }
+
+    @Nested
     @DisplayName("Ordinary protocol traffic")
     class Housekeeping {
 

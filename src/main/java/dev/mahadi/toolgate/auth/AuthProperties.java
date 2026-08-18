@@ -48,6 +48,16 @@ public class AuthProperties {
         public void setScopes(Set<String> scopes) { this.scopes = scopes; }
     }
 
+    /**
+     * Origins a browser may present. Empty means none, so any request carrying an
+     * {@code Origin} is refused — which is correct for a gateway an agent talks to
+     * directly, and is the setting that closes DNS rebinding.
+     */
+    private java.util.Set<String> allowedOrigins = java.util.Set.of();
+
+    public java.util.Set<String> getAllowedOrigins() { return allowedOrigins; }
+    public void setAllowedOrigins(java.util.Set<String> allowedOrigins) { this.allowedOrigins = allowedOrigins; }
+
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public String getResourceUri() { return resourceUri; }

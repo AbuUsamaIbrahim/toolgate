@@ -57,13 +57,15 @@ public class GatewayService {
     private final SlackNotifier slack;
     private final SurfaceRouter router;
     private final SubscriptionRegistry subscriptions;
+    private final NotificationGate gate;
     private final ObjectMapper mapper;
 
     public GatewayService(ToolPolicyProperties props, PolicyEngine policy,
                           UpstreamClient upstream, InjectionScanner scanner,
                           ApprovalStore approvals, AuditLog audit,
                           Notifier notifier, SlackNotifier slack, SurfaceRouter router,
-                          SubscriptionRegistry subscriptions, ObjectMapper mapper) {
+                          SubscriptionRegistry subscriptions, NotificationGate gate,
+                          ObjectMapper mapper) {
         this.props = props;
         this.policy = policy;
         this.upstream = upstream;
@@ -74,6 +76,7 @@ public class GatewayService {
         this.slack = slack;
         this.router = router;
         this.subscriptions = subscriptions;
+        this.gate = gate;
         this.mapper = mapper;
     }
 
@@ -555,9 +558,14 @@ public class GatewayService {
      * Where out-of-band responses go — set by the transport that has a channel to the
      * client. Null in HTTP mode, where there is nowhere to push.
      */
-    private volatile java.util.function.Consumer<Mcp.Response> outOfBand;
+    private volatile java.util.function.BiConsumer<String, Object> outOfBand;
 
-    public void onOutOfBandResponse(java.util.function.Consumer<Mcp.Response> sink) {
+    /**
+     * Registered by a transport that has one shared channel to the client — stdio. The
+     * client subscription id is passed alongside, because on a shared channel the message
+     * has to carry it for the client to demultiplex.
+     */
+    public void onOutOfBandMessage(java.util.function.BiConsumer<String, Object> sink) {
         this.outOfBand = sink;
     }
 
@@ -572,16 +580,135 @@ public class GatewayService {
     private void upstreamSubscriptionClosed(String clientId, String serverId) {
         if (!subscriptions.upstreamClosed(clientId, serverId)) return;
 
-        var sink = outOfBand;
-        if (sink == null) return;
-
-        sink.accept(Mcp.Response.ok(clientId, Map.of(
+        Mcp.Response closure = Mcp.Response.ok(clientId, Map.of(
                 "resultType", "complete",
-                "_meta", Map.of(NotificationGate.SUBSCRIPTION_ID, clientId))));
+                "_meta", Map.of(NotificationGate.SUBSCRIPTION_ID, clientId)));
+
+        // On HTTP the stream simply ends; on stdio the closure has to be written to the
+        // shared channel so the client knows this was clean rather than a dropped pipe.
+        var stream = streamSinks.remove(clientId);
+        if (stream != null) {
+            stream.accept(closure);
+            return;
+        }
+        var shared = outOfBand;
+        if (shared != null) shared.accept(clientId, closure);
+    }
+
+    /**
+     * Opens a subscription whose notifications go to a per-stream sink.
+     *
+     * <p>Over HTTP the subscription's response <em>is</em> its stream, so unlike stdio
+     * there is no shared channel — each subscription has its own, and the sink is scoped to
+     * it. That also makes cancellation free: the client closes the connection, the sink
+     * goes away, and nothing has to be correlated back to a request id.
+     */
+    public void streamSubscription(AccessToken caller, Mcp.Request request,
+                                   java.util.function.Consumer<Object> sink) {
+        String clientId = String.valueOf(request.id());
+        streamSinks.put(clientId, sink);
+
+        subscriptionsListen(caller, request)
+                .subscribe(response -> {
+                    // The acknowledgement is the first thing on the stream, as the spec
+                    // requires, and it is the gateway's own.
+                    if (response.error() != null) {
+                        sink.accept(response);
+                        streamSinks.remove(clientId);
+                    } else if (response.result() instanceof Map<?, ?> result) {
+                        Object ack = result.get("acknowledged");
+                        if (ack != null) {
+                            sink.accept(new Mcp.Request("2.0", null,
+                                    Mcp.NOTIFICATION_SUBSCRIPTION_ACK,
+                                    ack instanceof Map<?, ?> m
+                                            ? (Map<String, Object>) m : Map.of(),
+                                    Map.of()));
+                        }
+                    }
+                });
+    }
+
+    /**
+     * Replaces the subscription id with the one the client issued.
+     *
+     * <p>The upstream's id is meaningless to a client that never issued it, and relaying it
+     * would let a client running two subscriptions have messages attributed to the wrong
+     * one by any server willing to guess an id — which is easy, since they are derived.
+     */
+    @SuppressWarnings("unchecked")
+    public static Mcp.Request withSubscriptionId(Mcp.Request notification, String clientId) {
+        Map<String, Object> params = new LinkedHashMap<>(
+                notification.params() == null ? Map.of() : notification.params());
+
+        Map<String, Object> meta = params.get("_meta") instanceof Map<?, ?> existing
+                ? new LinkedHashMap<>((Map<String, Object>) existing)
+                : new LinkedHashMap<>();
+
+        meta.put(NotificationGate.SUBSCRIPTION_ID, clientId);
+        params.put("_meta", meta);
+
+        return new Mcp.Request(notification.jsonrpc(), null, notification.method(),
+                params, notification._meta());
+    }
+
+    /** Per-subscription sinks, for transports where each subscription has its own stream. */
+    private final Map<String, java.util.function.Consumer<Object>> streamSinks =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Subscribes to upstream notifications as soon as the gateway exists.
+     *
+     * <p>Registered here rather than by a transport, and the distinction cost a live test
+     * to find: routing moved into this class but registration stayed in {@code
+     * StdioServer}, so over HTTP nothing was listening at all. Notifications arrived,
+     * were parsed, and went nowhere. A transport should decide how to write a message, not
+     * whether anything is listening for one.
+     */
+    @jakarta.annotation.PostConstruct
+    void listenForNotifications() {
+        upstream.onNotification(this::routeNotification);
+    }
+
+    /**
+     * Routes an inbound notification to whoever should receive it.
+     *
+     * <p>One place, both transports. The two differ only in where a message ends up: HTTP
+     * gives each subscription its own stream, stdio shares one channel and needs the
+     * subscription id rewritten so the client can demultiplex. Deciding <em>whether</em> to
+     * forward is identical, and having it in one method is what stops the two paths
+     * drifting into different opinions about the same message.
+     */
+    public void routeNotification(String serverId, Mcp.Request notification) {
+        var verdict = gate.evaluate(serverId, notification);
+        if (!(verdict instanceof NotificationGate.Verdict.Forward forward)) return;
+
+        String clientId = forward.clientSubscriptionId();
+
+        // Rewritten on every transport, not only the shared one. An earlier version
+        // skipped this for HTTP on the reasoning that a dedicated stream already says
+        // which subscription a message belongs to — but the message still CARRIES the id,
+        // and the specification says clients correlate on that field. Skipping it leaked
+        // the upstream's id to the client, which is the cross-stream problem the rewrite
+        // exists to prevent, just on a different transport.
+        Mcp.Request outbound = clientId == null
+                ? notification
+                : withSubscriptionId(notification, clientId);
+
+        if (clientId != null) {
+            var sink = streamSinks.get(clientId);
+            if (sink != null) {
+                sink.accept(outbound);
+                return;
+            }
+        }
+
+        var shared = outOfBand;
+        if (shared != null) shared.accept(clientId, outbound);
     }
 
     /** Tears down a subscription the client cancelled. */
     public void cancelSubscription(String clientSubscriptionId) {
+        streamSinks.remove(clientSubscriptionId);
         Map<String, String> upstreamIds = subscriptions.cancel(clientSubscriptionId);
         upstreamIds.forEach((serverId, upstreamId) -> upstream.send(serverId,
                         new Mcp.Request("2.0", null, Mcp.NOTIFICATION_CANCELLED,
