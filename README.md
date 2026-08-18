@@ -96,6 +96,7 @@ Toolgate is the missing mechanism.
 | **Durable audit trail** | The record of what happened evaporating on the restart that follows the incident. |
 | **Signed policy bundles** | Policy that lives in a file on each developer's laptop, editable by that developer. |
 | **OIDC identity** | Audit lines naming a config entry instead of a person, and credentials that never expire. |
+| **Metrics and OTLP export** | A gateway that answers every request promptly while governing nothing, and nobody notices. |
 | **Header-mirror confinement** | `x-mcp-header` letting a tool definition write arbitrary HTTP headers. |
 
 ### Where the filtering happens
@@ -398,6 +399,59 @@ is what the platform team can do that everyone else cannot. A team *can* attach 
 requirement to the access it grants; it cannot remove one the base policy set, because team
 membership must not be a way to switch a control off.
 
+### Telemetry
+
+A gateway can be healthy by every ordinary measure — accepting connections, answering
+quickly, no errors — while enforcing a policy that expired last month, or none at all.
+That is invisible to a liveness probe, so `/actuator/health` reports on policy itself:
+
+```json
+"policy": { "status": "UP", "policy": "signed bundle in force",
+            "sequence": 200, "issuer": "security@example.com", "signedBy": "prod-2026" }
+```
+
+It goes `DOWN` when the bundle is stale or has failed to load. Nothing restarts the sidecar
+on that — the entire value of the signal is that somebody is told.
+
+`/actuator/prometheus` carries the decision counters and the bundle gauges:
+
+```
+toolgate_bundle_health 1.0                # 0 disabled, 1 fresh, 2 stale, 3 failed
+toolgate_bundle_sequence 200.0
+toolgate_decisions_total{action="advertise",outcome="DENIED",reason="not_allowlisted",server="demo"} 5.0
+toolgate_decisions_total{action="advertise",outcome="ALLOWED",reason="ok",server="demo"} 3.0
+```
+
+**Note what is not a label: the tool name.** The obvious design tags each decision with the
+tool it concerned, and it is exactly wrong, because tool names come from the upstream
+server — the untrusted party this gateway exists to defend against. A hostile upstream
+advertising ten thousand randomly named tools would mint ten thousand time series, held in
+memory for the life of the process and shipped on every scrape. The gateway would correctly
+refuse every one of those tools and be destroyed by the monitoring it did about them.
+Attacker-controlled label values are a denial of service aimed at your own observability,
+and *the request being denied does not help*. Labels come only from sets the operator
+controls; which tool it was is a question for the audit trail, which is built to hold
+unbounded strings and is not indexed by them.
+
+The audit trail can also go to an OpenTelemetry collector:
+
+```yaml
+toolgate:
+  otlp:
+    endpoint: http://otel-collector:4318/v1/logs
+    service-instance-id: ""        # defaults to the hostname
+```
+
+Denials and approval requests are emitted at `WARN` so a SIEM can route on severity rather
+than re-deriving the triage the gateway already did. Export is batched and asynchronous: a
+dead collector must never fail a tool call.
+
+This matters more than it looks on a fleet of laptops. The JSON Lines file is append-only
+from the gateway's side, but it lives on the machine being audited — anyone who can write
+that disk can rewrite the record of what they did. A copy somewhere the caller does not
+control is the difference between a log and evidence. (Tailing the file with Fluent Bit or
+Vector is an equally good way to get that, and needs no code at all.)
+
 ### What the distribution layer has to get right
 
 Signing is the easy part. These are the states a real fleet actually spends its time in:
@@ -431,9 +485,9 @@ Worth stating plainly, because a security tool that oversells itself is worse th
 - **Pattern matching loses on its own.** The injection scanner catches the unsophisticated
   majority. An attacker who knows the rules can phrase around them. It scores rather than
   blocks, and exists as defence in depth — not as an oracle.
-- **The audit trail is a local file.** It is append-only from this process's side, but
-  anything with write access to the disk can edit it. A deployment that needs a record it
-  cannot rewrite should ship the lines to a sink it does not control.
+- **The local audit file is editable by whoever holds the machine.** Append-only from this
+  process's side only. Configure OTLP export, or tail it with a log shipper, if the record
+  needs to survive the person being audited.
 - **The operator credential is a bearer token in a config file.** It is separate from the
   agent's token and defaults to loopback-only, but it is still a static shared secret. A
   deployment with real identity infrastructure should front `/toolgate/**` with it.

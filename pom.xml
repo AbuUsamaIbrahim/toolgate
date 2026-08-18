@@ -35,6 +35,25 @@
       <artifactId>spring-boot-starter-actuator</artifactId>
     </dependency>
 
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+
+    <!--
+      OTLP log export for the audit trail. Versions come from Spring Boot's BOM.
+      Hand-rolling the wire format would be a mistake for a control whose whole value
+      is that someone else's collector can read it.
+    -->
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-exporter-otlp</artifactId>
+    </dependency>
+
     <!--
       JWT validation, not hand-rolled. The classic failures here are algorithm confusion
       (accepting alg:none, or an RS256 public key used as an HMAC secret) and getting key

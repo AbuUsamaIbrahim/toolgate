@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.mahadi.toolgate.audit.AuditLog;
 import dev.mahadi.toolgate.audit.AuditProperties;
 import dev.mahadi.toolgate.audit.AuditSink;
+import dev.mahadi.toolgate.audit.FileAuditSink;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -29,11 +30,11 @@ class DurableAuditTest {
                         .WRITE_DATES_AS_TIMESTAMPS);
     }
 
-    private static AuditSink sink(Path file, boolean failClosed) {
+    private static FileAuditSink sink(Path file, boolean failClosed) {
         var props = new AuditProperties();
         props.setFile(file.toString());
         props.setFailClosed(failClosed);
-        var s = new AuditSink(props, mapper());
+        var s = new FileAuditSink(props, mapper());
         s.open();
         return s;
     }
@@ -42,7 +43,7 @@ class DurableAuditTest {
     @DisplayName("every decision is appended as one JSON line")
     void appendsJsonLines(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("audit.jsonl");
-        var log = new AuditLog(sink(file, false));
+        var log = new AuditLog(List.of(sink(file, false)));
 
         log.record("agent", "files", "read_file", "tools/call",
                 AuditLog.Outcome.ALLOWED, "allowlisted and pinned", List.of());
@@ -63,7 +64,7 @@ class DurableAuditTest {
     @DisplayName("the trail is flushed per entry, not on close")
     void flushedImmediately(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("audit.jsonl");
-        var log = new AuditLog(sink(file, false));
+        var log = new AuditLog(List.of(sink(file, false)));
 
         log.record("agent", "files", "read_file", "tools/call",
                 AuditLog.Outcome.ALLOWED, "ok", List.of());
@@ -77,9 +78,9 @@ class DurableAuditTest {
     void appendsAcrossRestart(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("audit.jsonl");
 
-        new AuditLog(sink(file, false)).record("agent", "files", "a", "tools/call",
+        new AuditLog(List.of(sink(file, false))).record("agent", "files", "a", "tools/call",
                 AuditLog.Outcome.ALLOWED, "first run", List.of());
-        new AuditLog(sink(file, false)).record("agent", "files", "b", "tools/call",
+        new AuditLog(List.of(sink(file, false))).record("agent", "files", "b", "tools/call",
                 AuditLog.Outcome.ALLOWED, "second run", List.of());
 
         assertThat(Files.readAllLines(file)).hasSize(2);
@@ -106,7 +107,7 @@ class DurableAuditTest {
         var props = new AuditProperties();
         props.setFile(blocked.resolve("audit.jsonl").toString());
 
-        assertThatThrownBy(() -> new AuditSink(props, mapper()).open())
+        assertThatThrownBy(() -> new FileAuditSink(props, mapper()).open())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("cannot open audit file");
     }
@@ -115,10 +116,10 @@ class DurableAuditTest {
     @DisplayName("with no file configured the sink is inert, not broken")
     void inMemoryOnlyStillWorks() {
         var props = new AuditProperties();
-        var s = new AuditSink(props, mapper());
+        var s = new FileAuditSink(props, mapper());
         s.open();
 
-        var log = new AuditLog(s);
+        var log = new AuditLog(List.of(s));
         log.record("agent", "files", "read_file", "tools/call",
                 AuditLog.Outcome.ALLOWED, "ok", List.of());
 

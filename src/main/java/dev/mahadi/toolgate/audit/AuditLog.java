@@ -31,10 +31,13 @@ public class AuditLog {
 
     private final Deque<Entry> entries = new ArrayDeque<>(CAPACITY);
 
-    private final AuditSink sink;
+    private final List<AuditSink> sinks;
 
-    public AuditLog(AuditSink sink) {
-        this.sink = sink;
+    public AuditLog(List<AuditSink> sinks) {
+        // Ordered: the durable sink runs first, so a deployment configured to fail closed
+        // on an unwritable trail refuses before anything else has treated the decision as
+        // recorded. Everything after it is best-effort.
+        this.sinks = List.copyOf(sinks);
     }
 
     public enum Outcome { ALLOWED, DENIED, APPROVAL_REQUIRED, APPROVED, FAILED }
@@ -50,9 +53,17 @@ public class AuditLog {
             List<String> evidence) {}
 
     public void record(Entry entry) {
-        // Durable first. If this deployment fails closed on an unwritable trail, the
-        // throw must happen before anything reports the decision as recorded.
-        sink.append(entry);
+        for (AuditSink sink : sinks) {
+            try {
+                sink.append(entry);
+            } catch (AuditSink.AuditWriteException e) {
+                throw e;        // the deployment asked for this
+            } catch (RuntimeException e) {
+                // One broken exporter must not silence the others, and must certainly not
+                // fail the request whose decision we are recording.
+                log.warn("audit sink {} failed: {}", sink.getClass().getSimpleName(), e.toString());
+            }
+        }
 
         synchronized (this) {
             if (entries.size() >= CAPACITY) entries.removeFirst();

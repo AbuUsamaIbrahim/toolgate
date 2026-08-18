@@ -10,11 +10,18 @@ logging:
     toolgate.audit: INFO
     dev.mahadi.toolgate: INFO
 
+# /actuator/prometheus carries the decision counters and the bundle gauges.
+# /actuator/health reports DOWN when policy has expired or failed to load — the
+# failure an ordinary liveness probe cannot see, because a gateway can answer
+# every request promptly while governing nothing at all.
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health, info, prometheus
+  endpoint:
+    health:
+      show-details: always
 
 # ---------------------------------------------------------------------------
 # Policy. Deny by default: a tool absent from `allow` is never shown to the model.
@@ -147,6 +154,23 @@ toolgate:
     stale-grace: 24h              # enforce this long past expiry, then fail closed
     cache-file: ~/.toolgate/bundle.cache.json
     public-keys: {}               # keyid -> base64 X.509 Ed25519 key; more than one to rotate
+
+  # -------------------------------------------------------------------------
+  # OTLP export for the audit trail. The file on disk lives on the machine
+  # being audited, so anyone who can write that disk can rewrite the record of
+  # what they did. A copy in a sink the caller does not control is what turns
+  # a log into evidence.
+  #
+  # Tailing the JSON Lines file with Fluent Bit or Vector is an equally good
+  # answer and needs no code. This is for deployments already running a
+  # collector. Export is batched and asynchronous either way: a dead collector
+  # must never fail a tool call.
+  # -------------------------------------------------------------------------
+  otlp:
+    endpoint: ""                  # e.g. http://otel-collector:4318/v1/logs
+    service-name: toolgate
+    service-instance-id: ""       # defaults to the hostname
+    timeout: 10s
 
   block-threshold: 50
   approve-first-sighting: false
