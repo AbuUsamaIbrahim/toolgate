@@ -23,14 +23,33 @@ class H(BaseHTTPRequestHandler):
 
         # Report what the advisor actually sent, so the request shape is verified rather
         # than assumed.
-        print("  request seen:", flush=True)
-        print(f"    x-api-key present:      {'x-api-key' in self.headers}", flush=True)
-        print(f"    anthropic-version:      {self.headers.get('anthropic-version')}", flush=True)
+        msgs = req.get("messages", [])
+        # Which dialect arrived is inferred from the request, not configured here — that
+        # way the check fails loudly if the advisor sends a shape neither provider accepts.
+        openai = any(m.get("role") == "system" for m in msgs)
+        auth = self.headers.get("authorization", "")
+
+        print(f"  request seen ({'openai/deepseek' if openai else 'anthropic'} shape):", flush=True)
+        if openai:
+            print(f"    authorization Bearer:   {auth.startswith('Bearer ') and len(auth) > 7}", flush=True)
+            print(f"    x-api-key absent:       {'x-api-key' not in self.headers}", flush=True)
+            system = next((m.get("content", "") for m in msgs if m.get("role") == "system"), "")
+        else:
+            print(f"    x-api-key present:      {'x-api-key' in self.headers}", flush=True)
+            print(f"    anthropic-version:      {self.headers.get('anthropic-version')}", flush=True)
+            print(f"    authorization absent:   {not auth}", flush=True)
+            system = req.get("system", "")
+
         print(f"    model:                  {req.get('model')}", flush=True)
-        print(f"    system prompt present:  {bool(req.get('system'))}", flush=True)
-        content = req.get("messages", [{}])[0].get("content", "")
+        print(f"    system prompt present:  {bool(system)}", flush=True)
+        print(f"    system names hostility: {'compromised' in system}", flush=True)
+        content = next((m.get("content", "") for m in msgs if m.get("role") == "user"), "")
         print(f"    diff delimited:         {'<drift_diff>' in content}", flush=True)
-        print(f"    diff content reached:   {'id_rsa' in content}", flush=True)
+        # The diff body itself, not a token from one particular scenario — an assertion
+        # tied to the poisoned wording silently reads False on every benign-drift run.
+        inner = content.split("<drift_diff>")[-1].split("</drift_diff>")[0].strip()
+        print(f"    diff body non-empty:    {len(inner) > 0} ({len(inner)} chars)", flush=True)
+        print(f"    diff shows both sides:  {'-' in inner and '+' in inner}", flush=True)
 
         if MODE == "slow":
             time.sleep(40)
@@ -58,7 +77,12 @@ class H(BaseHTTPRequestHandler):
             }),
         }[MODE]
 
-        body = json.dumps({"content": [{"type": "text", "text": text}]}).encode()
+        # Reply in whichever shape was asked for, so the advisor's extraction path is
+        # exercised rather than assumed.
+        body = json.dumps(
+            {"choices": [{"message": {"role": "assistant", "content": text}}]} if openai
+            else {"content": [{"type": "text", "text": text}]}
+        ).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))

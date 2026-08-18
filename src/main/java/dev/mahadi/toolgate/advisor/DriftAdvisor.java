@@ -153,31 +153,61 @@ public class DriftAdvisor {
     }
 
     private Advice ask(String diff) throws Exception {
-        Map<String, Object> body = Map.of(
-                "model", props.getModel(),
-                "max_tokens", 700,
-                "system", SYSTEM,
-                "messages", List.of(Map.of("role", "user", "content",
-                        "<drift_diff>\n" + diff + "\n</drift_diff>")));
+        boolean openai = props.getApi() == AdvisorProperties.Dialect.OPENAI;
+        String prompt = "<drift_diff>\n" + diff + "\n</drift_diff>";
+
+        // The system prompt is a first-class field on the Messages API and an ordinary
+        // message on the chat-completions one. Same text, same instruction, different slot.
+        Map<String, Object> body = openai
+                ? Map.of(
+                        "model", props.getModel(),
+                        "max_tokens", 700,
+                        "messages", List.of(
+                                Map.of("role", "system", "content", SYSTEM),
+                                Map.of("role", "user", "content", prompt)))
+                : Map.of(
+                        "model", props.getModel(),
+                        "max_tokens", 700,
+                        "system", SYSTEM,
+                        "messages", List.of(Map.of("role", "user", "content", prompt)));
+
+        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(props.getEndpoint()))
+                .timeout(props.getTimeout())
+                .header("content-type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)));
+
+        if (openai) {
+            request.header("authorization", "Bearer " + props.apiKey());
+        } else {
+            request.header("x-api-key", props.apiKey());
+            request.header("anthropic-version", "2023-06-01");
+        }
 
         HttpResponse<String> response = http.send(
-                HttpRequest.newBuilder(URI.create(props.getEndpoint()))
-                        .timeout(props.getTimeout())
-                        .header("content-type", "application/json")
-                        .header("x-api-key", props.apiKey())
-                        .header("anthropic-version", "2023-06-01")
-                        .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
-                        .build(),
-                HttpResponse.BodyHandlers.ofString());
+                request.build(), HttpResponse.BodyHandlers.ofString());
 
         if (response.statusCode() != 200) {
+            // Deliberately not logging the body: a provider that echoes the request, or
+            // names the key in its error, would otherwise put it in the log.
             log.debug("advisor returned HTTP {}", response.statusCode());
             return null;
         }
 
-        JsonNode root = mapper.readTree(response.body());
-        String text = root.path("content").path(0).path("text").asText("");
-        return parse(text);
+        return parse(extractText(mapper.readTree(response.body()), openai));
+    }
+
+    /**
+     * Pulls the assistant's text out of whichever envelope came back.
+     *
+     * <p>Both paths return {@code ""} rather than throwing when the shape is unfamiliar,
+     * because {@link #parse(String)} already treats unparseable output as "no advice" —
+     * and a provider changing its envelope should cost an operator a missing note, not a
+     * broken console.
+     */
+    public static String extractText(JsonNode root, boolean openai) {
+        return openai
+                ? root.path("choices").path(0).path("message").path("content").asText("")
+                : root.path("content").path(0).path("text").asText("");
     }
 
     /**

@@ -35,6 +35,22 @@ public class AdvisorProperties {
     /** Short. An advisory note that arrives late is worse than none, because it blocks. */
     private Duration timeout = Duration.ofSeconds(20);
 
+    /**
+     * Which HTTP dialect the endpoint speaks.
+     *
+     * <p>Two shapes cover nearly everything worth pointing this at. {@code ANTHROPIC} is
+     * the Messages API. {@code OPENAI} is the chat-completions shape that DeepSeek,
+     * OpenAI, Groq, Together and most self-hosted servers implement — a different auth
+     * header, the system prompt as the first message rather than its own field, and the
+     * reply under {@code choices[0].message.content}.
+     *
+     * <p>The advisor is advisory and reads hostile text either way, so the choice changes
+     * nothing about the trust model: whatever comes back is escaped and cannot act.
+     */
+    public enum Dialect { ANTHROPIC, OPENAI }
+
+    private Dialect api = Dialect.ANTHROPIC;
+
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public String getEndpoint() { return endpoint; }
@@ -45,6 +61,8 @@ public class AdvisorProperties {
     public void setApiKeyEnv(String apiKeyEnv) { this.apiKeyEnv = apiKeyEnv; }
     public Duration getTimeout() { return timeout; }
     public void setTimeout(Duration timeout) { this.timeout = timeout; }
+    public Dialect getApi() { return api; }
+    public void setApi(Dialect api) { this.api = api; }
 
     public String apiKey() {
         String key = System.getenv(apiKeyEnv);

@@ -1072,6 +1072,27 @@ It also **never blocks the page**. The note is fetched in the background and app
 later refresh; the dashboard renders at the speed of local state whatever the provider is
 doing. Measured against an API hanging for forty seconds, the page still returned in 32ms.
 
+**Any provider, not just one.** `toolgate.advisor.api` selects the HTTP dialect —
+`ANTHROPIC` for the Messages API, `OPENAI` for the chat-completions shape that DeepSeek,
+OpenAI, Groq, Together and most self-hosted servers implement. The difference is a bearer
+token instead of `x-api-key`, the system prompt as the first message instead of its own
+field, and the reply under `choices[0].message.content`. For DeepSeek:
+
+```yaml
+toolgate:
+  advisor:
+    enabled: true
+    api: OPENAI
+    endpoint: https://api.deepseek.com/chat/completions
+    model: deepseek-chat
+    api-key-env: DEEPSEEK_API_KEY     # read from the environment, never from this file
+```
+
+The key is read from the named environment variable and there is deliberately no setter for
+it, so it cannot be committed to a config file by accident. Choosing a provider does not
+change the trust model: whatever comes back is escaped, cannot act, and appears beside the
+diff rather than instead of it.
+
 **Enabling it changes what this software does with your data.** Until then the gateway makes
 no outbound calls except to configured upstreams. That property is worth giving up
 knowingly rather than by default, which is why it is off.
