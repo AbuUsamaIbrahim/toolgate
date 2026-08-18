@@ -76,6 +76,20 @@ class ShippedConfigTest {
     }
 
     @Test
+    @DisplayName("the liveness and readiness endpoints exist regardless of where it runs")
+    void probeEndpointsAreExplicit() throws Exception {
+        var source = load().get(0);
+
+        // Spring Boot enables these groups only when it auto-detects Kubernetes, so
+        // without this the probe endpoints 404 under systemd, docker compose or ECS — and
+        // whatever health check points at them fails permanently. Found by curling them
+        // while writing the runbook.
+        assertThat(source.getProperty("management.endpoint.health.probes.enabled"))
+                .as("liveness/readiness must not depend on the runtime environment")
+                .isEqualTo(true);
+    }
+
+    @Test
     @DisplayName("the placeholder token hash matches the value its comment names")
     void placeholderHashIsHonest() throws Exception {
         var source = load().get(0);

@@ -54,6 +54,11 @@ standard transports, in both directions.
   named two people as having approved one request.
 - Two threads could each record a first sighting of the same definition.
 
+### Also fixed
+- `/actuator/health/liveness` and `/readiness` returned 404 outside Kubernetes, because
+  Spring Boot enables those groups only on auto-detecting a cluster. Any health check
+  pointed at them under systemd, docker compose or ECS would have failed permanently.
+
 ### Known limitations
 See [Honest limitations](README.md#honest-limitations). The significant ones: binary
 resource content is not scanned, coverage is reported rather than enforced, revocation lags

@@ -1107,7 +1107,9 @@ in the narrow sense above — no sustained load, no concurrent subscriptions, no
 network. Both are stated in [SECURITY.md](SECURITY.md) rather than left to be assumed.
 
 Releases are tagged; see [CHANGELOG.md](CHANGELOG.md). To report a vulnerability, see
-[SECURITY.md](SECURITY.md).
+[SECURITY.md](SECURITY.md). For operating it — what each failure mode looks like, what to
+do about it, and what to do *instead* of the tempting thing — see the
+[runbook](docs/RUNBOOK.md).
 
 ## Licence
 
