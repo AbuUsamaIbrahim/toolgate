@@ -47,6 +47,13 @@ standard transports, in both directions.
 - `tools/call` adds 4.0ms at p50; `tools/list` over 50 tools adds 14.1ms. Screening is
   sub-linear: ~6.4ms fixed plus ~0.066ms per tool. See `demo/load`.
 
+### Fixed after concurrency testing
+- A subscription whose upstreams closed simultaneously would never signal closure, leaving
+  the client waiting on a stream nobody served.
+- Two approvers clicking at the same moment both came back granted, so the audit trail
+  named two people as having approved one request.
+- Two threads could each record a first sighting of the same definition.
+
 ### Known limitations
 See [Honest limitations](README.md#honest-limitations). The significant ones: binary
 resource content is not scanned, coverage is reported rather than enforced, revocation lags

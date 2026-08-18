@@ -904,6 +904,9 @@ Worth stating plainly, because a security tool that oversells itself is worse th
 - **Revocation is bounded by token lifetime.** JWTs are validated offline against the JWKS,
   so a revoked session stays usable until it expires. Token introspection would close that
   at the cost of a network call per request; `TokenValidator` is the seam for it.
+- **Concurrency is tested at the unit level, not under sustained load.** The invariants
+  that matter — single-use grants, one approver per approval, one first sighting, one
+  closure — are exercised under contention, but nothing has run for hours.
 - **Performance is measured narrowly.** Minutes rather than hours, localhost only, and
   with no concurrent SSE subscriptions or database in the path.
 - **Coverage is reported, not enforced.** Check-ins show which gateways are running and

@@ -121,22 +121,32 @@ public class SubscriptionRegistry {
      * @return true when that was the last one, so the client's subscription is now over
      */
     public boolean upstreamClosed(String clientId, String serverId) {
-        Subscription existing = byClientId.get(clientId);
-        if (existing == null) return false;
+        // compute() rather than get-then-put. Upstreams shut down together — a deploy, a
+        // laptop sleeping — and with a read followed by a write each caller sees the state
+        // before any of them acted, every one of them concludes it was not the last, and
+        // the client is never told its subscription ended. A concurrent map makes each
+        // operation atomic; it does nothing for a read followed by a write.
+        java.util.concurrent.atomic.AtomicBoolean wasLast =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
 
-        Map<String, String> remaining = new java.util.LinkedHashMap<>(existing.upstreamIds());
-        String closed = remaining.remove(serverId);
-        if (closed != null) upstreamToClient.remove(link(serverId, closed));
+        byClientId.compute(clientId, (key, existing) -> {
+            if (existing == null) return null;
 
-        if (remaining.isEmpty()) {
-            byClientId.remove(clientId);
-            log.info("subscription {} closed: every upstream has ended", clientId);
-            return true;
-        }
-        // Still served by the others. A subscription spanning five servers should not end
-        // because one of them shut down cleanly.
-        byClientId.put(clientId, new Subscription(clientId, existing.granted(), remaining));
-        return false;
+            Map<String, String> remaining = new java.util.LinkedHashMap<>(existing.upstreamIds());
+            String closed = remaining.remove(serverId);
+            if (closed != null) upstreamToClient.remove(link(serverId, closed));
+
+            if (remaining.isEmpty()) {
+                wasLast.set(true);
+                log.info("subscription {} closed: every upstream has ended", clientId);
+                return null;      // removes the entry
+            }
+            // Still served by the others. A subscription spanning five servers should not
+            // end because one of them shut down cleanly.
+            return new Subscription(clientId, existing.granted(), remaining);
+        });
+
+        return wasLast.get();
     }
 
     /**

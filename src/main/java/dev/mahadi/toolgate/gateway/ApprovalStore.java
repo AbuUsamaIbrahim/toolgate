@@ -120,7 +120,14 @@ public class ApprovalStore {
             return new Outcome.SelfApproval(p);
         }
 
-        pending.remove(id);
+        // The remove decides who approved it. Without this, two people clicking Approve
+        // at the same moment both come back Granted, and the audit trail — the one record
+        // that exists to answer "who allowed this" — names two different people as having
+        // granted the same request. Authorisation stayed single-use either way; the
+        // integrity of the record did not.
+        Pending claimed = pending.remove(id);
+        if (claimed == null) return new Outcome.Unknown();
+
         granted.put(grantKey(p.caller(), p.serverId(), p.tool()), Instant.now());
         persist();
         log.info("Approval {} for {}/{} granted to {} by {}",

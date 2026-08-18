@@ -89,14 +89,18 @@ public class ToolPinStore {
     public Verdict check(String serverId, Mcp.Tool tool) {
         String key = key(serverId, tool.name());
         String actual = ToolFingerprint.of(tool);
-        Pin existing = pins.get(key);
+
+        // putIfAbsent, not get-then-put: several requests arrive together the first time a
+        // server is contacted, and two threads each returning FirstSighting would mean two
+        // callers each believing they established the baseline — and approve-first-sighting
+        // asking a human twice for the same definition.
+        Pin candidate = new Pin(serverId, tool.name(), actual, Instant.now(), tool);
+        Pin existing = pins.putIfAbsent(key, candidate);
 
         if (existing == null) {
-            Pin created = new Pin(serverId, tool.name(), actual, Instant.now(), tool);
-            pins.put(key, created);
             persist();
             log.info("Pinned new tool {} fingerprint={}", key, shortHash(actual));
-            return new Verdict.FirstSighting(created);
+            return new Verdict.FirstSighting(candidate);
         }
         if (existing.fingerprint().equals(actual)) {
             return new Verdict.Known(existing);

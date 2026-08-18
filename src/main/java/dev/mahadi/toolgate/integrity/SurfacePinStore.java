@@ -81,13 +81,15 @@ public class SurfacePinStore {
     public Verdict check(Kind kind, String serverId, String id, String fingerprint,
                          Map<String, Object> definition) {
         String key = key(kind, serverId, id);
-        Pin existing = pins.get(key);
+
+        // putIfAbsent for the same reason the tool pins use it: one atomic operation has
+        // to decide which caller established the baseline.
+        Pin candidate = new Pin(kind, serverId, id, fingerprint, Instant.now(), definition);
+        Pin existing = pins.putIfAbsent(key, candidate);
 
         if (existing == null) {
-            Pin created = new Pin(kind, serverId, id, fingerprint, Instant.now(), definition);
-            pins.put(key, created);
             persist();
-            return new Verdict.FirstSighting(created);
+            return new Verdict.FirstSighting(candidate);
         }
         if (existing.fingerprint().equals(fingerprint)) {
             return new Verdict.Known(existing);
