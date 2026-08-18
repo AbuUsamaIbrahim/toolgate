@@ -6,6 +6,7 @@ import dev.mahadi.toolgate.policy.PolicyEngine;
 import dev.mahadi.toolgate.policy.ToolPolicyProperties;
 import dev.mahadi.toolgate.protocol.Mcp;
 import dev.mahadi.toolgate.notify.Notifier;
+import dev.mahadi.toolgate.protocol.HeaderMirror;
 import dev.mahadi.toolgate.scanner.InjectionScanner;
 import dev.mahadi.toolgate.upstream.UpstreamClient;
 import org.slf4j.Logger;
@@ -226,7 +227,12 @@ public class GatewayService {
         Mcp.Request forwarded = new Mcp.Request("2.0", original.id(), Mcp.METHOD_TOOLS_CALL,
                 params, Map.of(Mcp.META_PROTOCOL_VERSION, Mcp.PROTOCOL_VERSION));
 
-        return upstream.send(serverId, forwarded)
+        // Mirrored headers come from the pinned definition — the one a human approved —
+        // not from whatever the upstream is advertising at this moment.
+        Map<String, String> mirrored = policy.mirroredHeaders(
+                serverId, toolName, original.arguments());
+
+        return upstream.send(serverId, forwarded, mirrored)
                 .map(resp -> screenResult(caller, serverId, toolName, resp))
                 .onErrorResume(e -> {
                     audit.record(caller, serverId, toolName, "tools/call",

@@ -40,12 +40,17 @@ public class UpstreamClient {
     }
 
     public Mono<Mcp.Response> send(String serverId, Mcp.Request request) {
+        return send(serverId, request, Map.of());
+    }
+
+    public Mono<Mcp.Response> send(String serverId, Mcp.Request request,
+                                   Map<String, String> mirroredHeaders) {
         ToolPolicyProperties.Server server = props.server(serverId);
         if (server == null) {
             return Mono.error(new IllegalArgumentException("unknown upstream: " + serverId));
         }
         try {
-            return transport(serverId, server).send(request);
+            return transport(serverId, server).send(request, mirroredHeaders);
         } catch (Exception e) {
             return Mono.error(e);
         }

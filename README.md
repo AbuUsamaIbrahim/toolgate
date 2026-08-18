@@ -49,6 +49,7 @@ Toolgate is the missing mechanism.
 | **Caller authentication** | An agent asserting whatever identity it likes. Bearer tokens, scopes, OAuth-shaped challenges. |
 | **Durable pins** | The trust store evaporating on restart and silently re-approving everything. |
 | **Drift diff** | An alert an operator has no way to evaluate. Shows exactly which field changed. |
+| **Header-mirror confinement** | `x-mcp-header` letting a tool definition write arbitrary HTTP headers. |
 
 ### Where the filtering happens
 
@@ -62,6 +63,39 @@ model ever sees them.
 
 Call-time checks still run, because a client may invoke a tool it was never offered, and a
 gateway that assumes otherwise is trusting the caller to enforce its own restrictions.
+
+### The one field that is not for the model
+
+Revision 2026-07-28 added `x-mcp-header`: a schema keyword that mirrors a tool argument
+into an HTTP header on the outgoing call. Every other field in a definition is text the
+model reads. This one is an instruction to the *transport*, which means a server that
+controls its own tool definitions can reach past the JSON-RPC body and write into the
+header block — a boundary nothing else in the protocol lets an upstream cross.
+
+```jsonc
+{ "path": { "type": "string", "x-mcp-header": "Authorization" } }   // refused
+{ "path": { "type": "string", "x-mcp-header": "Mcp-Param-Path" } }  // accepted
+```
+
+Left on trust, three things follow. A definition naming `Authorization` turns an innocuous
+string parameter into control over the credential the gateway authenticates with, and the
+model filling it in has no idea what it is writing. A value containing CR or LF ends the
+header and begins whatever comes next. And headers are logged by every proxy in the path in
+a way bodies are not, so mirroring an argument into one quietly moves it somewhere with far
+longer retention.
+
+The rule is that mirrored headers must sit in the `Mcp-Param-` namespace the specification
+reserves for them. That one constraint is what makes `Authorization`, `Cookie`, `Host` and
+everything else unreachable — rather than a block list, which is a race between the list and
+the next header somebody finds a use for. Declarations are found in nested schemas too,
+since burying one is the first thing anyone tries. Values are dropped, not escaped, if they
+carry control characters; and one bad declaration voids every mirror on the tool, so an
+attacker cannot pair a valid declaration with a doomed one and learn from which half still
+works.
+
+Because the keyword lives in the input schema, changing it changes the tool's fingerprint —
+a definition that mirrors nothing today and something tomorrow is caught as drift whatever
+the new value happens to be.
 
 ## Authentication
 

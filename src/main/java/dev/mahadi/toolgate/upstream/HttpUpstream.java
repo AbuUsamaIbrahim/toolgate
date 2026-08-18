@@ -27,7 +27,7 @@ public class HttpUpstream implements UpstreamTransport {
     }
 
     @Override
-    public Mono<Mcp.Response> send(Mcp.Request request) {
+    public Mono<Mcp.Response> send(Mcp.Request request, java.util.Map<String, String> extraHeaders) {
         var spec = client.post()
                 .contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.APPLICATION_JSON)
@@ -36,6 +36,13 @@ public class HttpUpstream implements UpstreamTransport {
         // The gateway's own credential for this upstream — never the caller's.
         if (token != null && !token.isBlank()) {
             spec = spec.header("Authorization", "Bearer " + token);
+        }
+
+        // Mirrored parameters go on last, but they cannot overwrite anything set above:
+        // the policy engine confines them to the Mcp-Param-* namespace, so a definition
+        // cannot name Authorization however it is written.
+        for (var e : extraHeaders.entrySet()) {
+            spec = spec.header(e.getKey(), e.getValue());
         }
 
         return spec.bodyValue(request)

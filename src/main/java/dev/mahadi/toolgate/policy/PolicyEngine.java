@@ -2,6 +2,7 @@ package dev.mahadi.toolgate.policy;
 
 import dev.mahadi.toolgate.integrity.DriftStore;
 import dev.mahadi.toolgate.integrity.ToolPinStore;
+import dev.mahadi.toolgate.protocol.HeaderMirror;
 import dev.mahadi.toolgate.protocol.Mcp;
 import dev.mahadi.toolgate.scanner.InjectionScanner;
 import org.springframework.stereotype.Component;
@@ -83,7 +84,19 @@ public class PolicyEngine {
         }
         boolean firstSighting = verdict instanceof ToolPinStore.Verdict.FirstSighting;
 
-        // 3. Content.
+        // 3. Header mirroring. Unlike everything else in a definition this is an
+        // instruction to the transport rather than text for the model, so it is checked
+        // separately and refused outright — there is no benign reason for a tool to name
+        // a header outside the reserved namespace, so there is nothing for a human to
+        // weigh up and no reason to escalate rather than deny.
+        var headerProblems = HeaderMirror.validate(tool);
+        if (!headerProblems.isEmpty()) {
+            return new Decision.Deny(
+                    "tool declares an unacceptable x-mcp-header mirror",
+                    List.copyOf(headerProblems));
+        }
+
+        // 4. Content.
         var scan = scanner.scan(tool);
         if (!scan.clean()) {
             List<String> evidence = new ArrayList<>();
@@ -134,6 +147,21 @@ public class PolicyEngine {
             return new Decision.NeedsApproval("tool is marked as requiring human approval");
         }
         return new Decision.Allow("allowlisted and pinned");
+    }
+
+    /**
+     * Headers to mirror for a call, derived from the pinned definition.
+     *
+     * <p>Reading the pin rather than the live definition matters: it means a tool must
+     * have been advertised and accepted before it can influence a header at all, and the
+     * instruction being followed is the one that was reviewed.
+     */
+    public java.util.Map<String, String> mirroredHeaders(
+            String serverId, String toolName, java.util.Map<String, Object> arguments) {
+        return pins.get(serverId, toolName)
+                .map(ToolPinStore.Pin::definition)
+                .map(def -> HeaderMirror.headersFor(def, arguments))
+                .orElse(java.util.Map.of());
     }
 
     private static String abbreviate(String hash) {

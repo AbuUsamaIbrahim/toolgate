@@ -13,7 +13,17 @@ import reactor.core.publisher.Mono;
  */
 public interface UpstreamTransport extends AutoCloseable {
 
-    Mono<Mcp.Response> send(Mcp.Request request);
+    /**
+     * Sends a message, mirroring {@code extraHeaders} where the binding has headers.
+     *
+     * <p>The map is validated by {@link dev.mahadi.toolgate.protocol.HeaderMirror} before
+     * it arrives — a transport applies it, it does not vet it.
+     */
+    Mono<Mcp.Response> send(Mcp.Request request, java.util.Map<String, String> extraHeaders);
+
+    default Mono<Mcp.Response> send(Mcp.Request request) {
+        return send(request, java.util.Map.of());
+    }
 
     @Override
     void close();

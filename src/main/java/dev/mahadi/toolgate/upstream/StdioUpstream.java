@@ -135,7 +135,14 @@ public class StdioUpstream implements UpstreamTransport {
     }
 
     @Override
-    public Mono<Mcp.Response> send(Mcp.Request request) {
+    public Mono<Mcp.Response> send(Mcp.Request request, java.util.Map<String, String> extraHeaders) {
+        // A subprocess pipe has no header block. Dropping mirrored parameters is the only
+        // option, but it is logged rather than silent: a tool that depends on one will
+        // misbehave in a way nothing else explains.
+        if (!extraHeaders.isEmpty()) {
+            log.warn("Dropping {} mirrored header(s) for stdio upstream {} — the transport "
+                    + "cannot carry them", extraHeaders.size(), serverId);
+        }
         if (!process.isAlive()) {
             return Mono.error(new IllegalStateException("upstream " + serverId + " is not running"));
         }
