@@ -197,6 +197,44 @@ class SubscriptionTest {
     }
 
     @Nested
+    @DisplayName("Ordinary protocol traffic")
+    class Housekeeping {
+
+        @Test
+        @DisplayName("an upstream acknowledgement is consumed, not shown to the client")
+        void ackConsumedSilently() {
+            registry.open("1", filter(Set.of(), true), Map.of("A", "up-1"));
+
+            var verdict = gate.evaluate("A",
+                    onStream("notifications/subscriptions/acknowledged", "up-1", null));
+
+            // The client holds one subscription, not one per server, and already has the
+            // gateway's own acknowledgement describing the whole thing.
+            assertThat(verdict).isInstanceOf(NotificationGate.Verdict.Drop.class);
+        }
+
+        @Test
+        @DisplayName("consuming an acknowledgement is not audited as an anomaly")
+        void ackNotAuditedAsAttack() {
+            // A live run produced one alarming audit line per upstream per subscription,
+            // for entirely routine traffic. Auditing that is how an operator learns to
+            // scroll past the entries that matter.
+            registry.open("1", filter(Set.of(), true), Map.of("A", "up-1"));
+            gate.evaluate("A", onStream("notifications/subscriptions/acknowledged", "up-1", null));
+
+            assertThat(recorded).noneMatch(e -> e.outcome() == AuditLog.Outcome.DENIED);
+        }
+
+        @Test
+        @DisplayName("an acknowledgement from an upstream with no subscription is still quiet")
+        void unknownAckAlsoQuiet() {
+            gate.evaluate("A", onStream("notifications/subscriptions/acknowledged", "up-1", null));
+
+            assertThat(recorded).noneMatch(e -> e.outcome() == AuditLog.Outcome.DENIED);
+        }
+    }
+
+    @Nested
     @DisplayName("Filter shape")
     class FilterShape {
 

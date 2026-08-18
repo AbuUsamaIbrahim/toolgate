@@ -1,0 +1,16 @@
+toolgate:
+  auth: { enabled: false, callers: {} }
+  operator: { enabled: false }
+  bundle: { source: "" }
+  pins: { file: demo/subscriptions/pins.json }
+  audit: { file: demo/subscriptions/audit.jsonl }
+  approvals: { file: demo/subscriptions/approvals.json }
+  servers:
+    A:
+      command: ["python3", "demo/subscriptions/upstream.py", "A"]
+      allow-resources: ["file:///a/one.md"]
+      allowed-uri-schemes: [file]
+    B:
+      command: ["python3", "demo/subscriptions/upstream.py", "B"]
+      allow-resources: ["file:///b/one.md"]
+      allowed-uri-schemes: [file]

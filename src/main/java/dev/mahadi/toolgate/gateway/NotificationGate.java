@@ -104,6 +104,16 @@ public class NotificationGate {
         String method = notification.method();
         if (method == null) return new Verdict.Drop("no method");
 
+        if (Mcp.NOTIFICATION_SUBSCRIPTION_ACK.equals(method)) {
+            // Every upstream sends one of these, and the client must not see any of them:
+            // it holds one subscription, not one per server, and the gateway has already
+            // sent it the only acknowledgement that describes the whole thing. Consumed
+            // silently, because auditing routine protocol traffic as an anomaly is how an
+            // operator learns to scroll past the entries that matter.
+            log.debug("consumed subscription acknowledgement from {}", serverId);
+            return new Verdict.Drop("upstream acknowledgement, consumed by the gateway");
+        }
+
         Object claimed = subscriptionIdOf(notification);
         if (claimed == null) {
             // Outside any subscription. Falls back to the unsolicited rules, which are

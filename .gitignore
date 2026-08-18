@@ -2,3 +2,9 @@ target/
 *.iml
 .idea/
 .DS_Store
+
+# Runtime state the demos write next to their config.
+demo/**/pins.json
+demo/**/pins-surfaces.json
+demo/**/audit.jsonl
+demo/**/approvals.json

@@ -468,14 +468,23 @@ public class GatewayService {
                     "nothing in the requested filter is permitted for this caller", null));
         }
 
-        // One upstream subscription per server, with an id the gateway chose. Long-lived
-        // by nature, so these are fired without waiting: the acknowledgement the client
-        // needs is the gateway's own, describing what the gateway agreed to.
+        // Ids are derived, not allocated, so the registry can be populated before a single
+        // request goes out.
         Map<String, String> upstreamIds = new LinkedHashMap<>();
         for (String serverId : props.serverIds()) {
-            String upstreamId = "tg-sub-" + clientId + "-" + serverId;
-            upstreamIds.put(serverId, upstreamId);
+            upstreamIds.put(serverId, "tg-sub-" + clientId + "-" + serverId);
+        }
 
+        // Registered FIRST. A server acknowledges the moment it receives the listen
+        // request and may push a notification immediately after, so opening the
+        // subscription after the fan-out leaves a window in which the gateway's own
+        // upstreams look like strangers — legitimate messages dropped, and an audit trail
+        // full of alarming entries for ordinary traffic.
+        subscriptions.open(clientId, granted, upstreamIds);
+
+        // Long-lived by nature, so these are fired without waiting: the acknowledgement
+        // the client needs is the gateway's own, describing what the gateway agreed to.
+        upstreamIds.forEach((serverId, upstreamId) -> {
             Map<String, Object> params = new LinkedHashMap<>();
             params.put("notifications", notificationFilter(granted, serverId));
 
@@ -484,9 +493,7 @@ public class GatewayService {
                             Map.of(Mcp.META_PROTOCOL_VERSION, Mcp.PROTOCOL_VERSION)))
                     .subscribe(r -> { }, e -> log.debug("subscription to {} ended: {}",
                             serverId, e.toString()));
-        }
-
-        subscriptions.open(clientId, granted, upstreamIds);
+        });
         audit.record(caller.subject(), "*", "subscription", "subscriptions/listen",
                 AuditLog.Outcome.ALLOWED, "subscription opened",
                 List.of("resources=" + permittedUris.size(),
