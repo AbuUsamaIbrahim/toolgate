@@ -24,6 +24,11 @@ public final class Mcp {
     public static final String METHOD_DISCOVER = "server/discover";
     public static final String METHOD_TOOLS_LIST = "tools/list";
     public static final String METHOD_TOOLS_CALL = "tools/call";
+    public static final String METHOD_RESOURCES_LIST = "resources/list";
+    public static final String METHOD_RESOURCES_READ = "resources/read";
+    public static final String METHOD_RESOURCE_TEMPLATES_LIST = "resources/templates/list";
+    public static final String METHOD_PROMPTS_LIST = "prompts/list";
+    public static final String METHOD_PROMPTS_GET = "prompts/get";
 
     private Mcp() {}
 
@@ -99,6 +104,110 @@ public final class Mcp {
     public record ToolsListResult(
             String resultType,
             List<Tool> tools,
+            String nextCursor,
+            Long ttlMs,
+            String cacheScope) {}
+
+    /**
+     * A resource a server offers as context.
+     *
+     * <p>Every field is model-visible or governs how the client treats the content, so all
+     * of it is attacker-controlled when the server is compromised — the same position tool
+     * definitions are in. Two fields are worse than they look:
+     *
+     * <ul>
+     *   <li>{@code annotations.audience} and {@code annotations.priority} are not
+     *       decoration. The specification defines priority 1.0 as "effectively required",
+     *       and audience {@code ["assistant"]} as content meant for the model. Together
+     *       they are a server-side control over what enters the model's context, asserted
+     *       by the least trusted party in the system.</li>
+     *   <li>{@code uri} decides who fetches the content. An {@code https://} URI is one the
+     *       spec permits the client to fetch directly — so the bytes never traverse this
+     *       gateway and nothing screens them.</li>
+     * </ul>
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record Resource(
+            String uri,
+            String name,
+            String title,
+            String description,
+            String mimeType,
+            Long size,
+            Map<String, Object> annotations,
+            List<Map<String, Object>> icons) {}
+
+    /** A parameterised resource, expanded by the client from an RFC 6570 template. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ResourceTemplate(
+            String uriTemplate,
+            String name,
+            String title,
+            String description,
+            String mimeType,
+            Map<String, Object> annotations,
+            List<Map<String, Object>> icons) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ResourcesListResult(
+            String resultType,
+            List<Resource> resources,
+            String nextCursor,
+            Long ttlMs,
+            String cacheScope) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ResourceTemplatesListResult(
+            String resultType,
+            List<ResourceTemplate> resourceTemplates,
+            String nextCursor,
+            Long ttlMs,
+            String cacheScope) {}
+
+    /** One piece of resource content: text, or base64 in {@code blob}. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ResourceContents(
+            String uri,
+            String mimeType,
+            String text,
+            String blob,
+            Map<String, Object> annotations) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ResourcesReadResult(
+            String resultType,
+            List<ResourceContents> contents,
+            Long ttlMs,
+            String cacheScope) {}
+
+    /**
+     * A prompt template.
+     *
+     * <p>The most direct injection surface in the protocol, and the one with the least
+     * ceremony around it: a prompt <em>is</em> instructions, so a poisoned one needs no
+     * cleverness to be obeyed. Tool descriptions have to persuade the model to act; a
+     * prompt is already the thing the model was asked to follow.
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record Prompt(
+            String name,
+            String title,
+            String description,
+            List<Map<String, Object>> arguments,
+            List<Map<String, Object>> icons) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record PromptsListResult(
+            String resultType,
+            List<Prompt> prompts,
             String nextCursor,
             Long ttlMs,
             String cacheScope) {}
