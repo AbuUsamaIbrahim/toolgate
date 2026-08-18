@@ -54,7 +54,13 @@ standard transports, in both directions.
   named two people as having approved one request.
 - Two threads could each record a first sighting of the same definition.
 
+### Added
+- An operator dashboard at `/toolgate`, behind the same credential as the rest of the
+  operator API. Read-only; renders the drift diff, the approval queue and recent refusals.
+
 ### Also fixed
+- The operator auth filter guarded `/toolgate/` but not `/toolgate`, so the dashboard was
+  reachable without a credential. Both forms are now covered.
 - `/actuator/health/liveness` and `/readiness` returned 404 outside Kubernetes, because
   Spring Boot enables those groups only on auto-detecting a cluster. Any health check
   pointed at them under systemd, docker compose or ECS would have failed permanently.

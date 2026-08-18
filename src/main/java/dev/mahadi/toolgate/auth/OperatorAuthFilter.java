@@ -31,7 +31,15 @@ import java.util.HexFormat;
 public class OperatorAuthFilter implements WebFilter {
 
     private static final Logger log = LoggerFactory.getLogger(OperatorAuthFilter.class);
+    /**
+     * The operator area. Both forms, and that is not pedantry: a filter guarding only
+     * {@code /toolgate/} leaves {@code /toolgate} itself wide open, which is exactly how
+     * the dashboard shipped unauthenticated for its first ten minutes of existence. This
+     * class already argued that "remember to guard the next endpoint" is not an access
+     * control model; a prefix that misses its own root is the same mistake one level down.
+     */
     private static final String PREFIX = "/toolgate/";
+    private static final String ROOT = "/toolgate";
 
     private final OperatorProperties props;
 
@@ -42,7 +50,8 @@ public class OperatorAuthFilter implements WebFilter {
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
         String path = exchange.getRequest().getPath().value();
-        if (!path.startsWith(PREFIX) || !props.isEnabled()) {
+        boolean operatorArea = path.equals(ROOT) || path.startsWith(PREFIX);
+        if (!operatorArea || !props.isEnabled()) {
             return chain.filter(exchange);
         }
 

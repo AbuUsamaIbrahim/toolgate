@@ -68,6 +68,15 @@ class OperatorApiAuthTest {
     }
 
     @Test
+    @DisplayName("the dashboard at the operator root is guarded, not just the paths under it")
+    void dashboardRootRequiresToken() {
+        // A prefix of "/toolgate/" does not match "/toolgate", so the dashboard shipped
+        // reachable without a credential — on the one API that can approve anything.
+        client().get().uri("/toolgate").exchange().expectStatus().isUnauthorized();
+        client().get().uri("/toolgate/").exchange().expectStatus().isUnauthorized();
+    }
+
+    @Test
     @DisplayName("a wrong token is refused")
     void wrongTokenRejected() {
         client().get().uri("/toolgate/audit")

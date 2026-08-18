@@ -997,6 +997,38 @@ the authority came from.
 
 Point your agent at `POST /mcp`. Tools arrive namespaced as `files__read_file`.
 
+### The dashboard
+
+Everything below was reachable with `curl` and `jq`, which in practice meant nobody looked.
+A drift alert is worthless unless someone reads the diff; an approval queue is worthless
+unless someone notices it is waiting. So there is a page:
+
+```
+open http://localhost:8080/toolgate     # same credential as the rest of the operator API
+```
+
+It answers four questions — is policy in force, what changed after approval, who is waiting
+on a human, and what was recently refused — and nothing else. It refreshes every fifteen
+seconds and holds no state.
+
+**It renders text written by the party under suspicion.** A drift diff shows a description a
+compromised server wrote; an audit line quotes the exact text that looked like an attack.
+Displaying that to the one person holding a token that can approve anything makes stored XSS
+here a privilege-escalation bug rather than a defacement one — a description containing
+`<img src=x onerror="fetch('/toolgate/drift/f/t/accept',{method:'POST'})">` would approve its
+own poisoning the moment an operator opened the page to look at it.
+
+So everything is escaped server-side, there is no `innerHTML` anywhere, and the page carries
+`default-src 'none'` — no script, from any source, including this one. Invisible characters
+are rendered as <code>⟨U+200B⟩</code> in red rather than passed through, which is not
+defence but the entire point: a reviewer deciding "release or attack" has to be able to see
+a zero-width space.
+
+It is **read-only**. Acting requires a POST, and a browser form cannot send the bearer
+header the operator API expects, so working buttons would mean a session cookie and CSRF
+protection on the one API that can approve anything. Each item shows the exact command
+instead — which is also what you would paste into a ticket.
+
 ### Operator API
 
 | Endpoint | Purpose |
