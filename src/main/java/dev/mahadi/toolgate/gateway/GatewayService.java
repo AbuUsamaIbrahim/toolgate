@@ -7,6 +7,7 @@ import dev.mahadi.toolgate.policy.PolicyEngine;
 import dev.mahadi.toolgate.policy.ToolPolicyProperties;
 import dev.mahadi.toolgate.protocol.Mcp;
 import dev.mahadi.toolgate.notify.Notifier;
+import dev.mahadi.toolgate.policy.ResourceGuard;
 import dev.mahadi.toolgate.protocol.HeaderMirror;
 import dev.mahadi.toolgate.slack.SlackNotifier;
 import dev.mahadi.toolgate.scanner.InjectionScanner;
@@ -54,12 +55,14 @@ public class GatewayService {
     private final AuditLog audit;
     private final Notifier notifier;
     private final SlackNotifier slack;
+    private final SurfaceRouter router;
     private final ObjectMapper mapper;
 
     public GatewayService(ToolPolicyProperties props, PolicyEngine policy,
                           UpstreamClient upstream, InjectionScanner scanner,
                           ApprovalStore approvals, AuditLog audit,
-                          Notifier notifier, SlackNotifier slack, ObjectMapper mapper) {
+                          Notifier notifier, SlackNotifier slack, SurfaceRouter router,
+                          ObjectMapper mapper) {
         this.props = props;
         this.policy = policy;
         this.upstream = upstream;
@@ -68,6 +71,7 @@ public class GatewayService {
         this.audit = audit;
         this.notifier = notifier;
         this.slack = slack;
+        this.router = router;
         this.mapper = mapper;
     }
 
@@ -76,6 +80,10 @@ public class GatewayService {
             case Mcp.METHOD_DISCOVER -> discover(request);
             case Mcp.METHOD_TOOLS_LIST -> toolsList(caller, request);
             case Mcp.METHOD_TOOLS_CALL -> toolsCall(caller, request);
+            case Mcp.METHOD_RESOURCES_LIST -> resourcesList(caller, request);
+            case Mcp.METHOD_RESOURCES_READ -> resourcesRead(caller, request);
+            case Mcp.METHOD_PROMPTS_LIST -> promptsList(caller, request);
+            case Mcp.METHOD_PROMPTS_GET -> promptsGet(caller, request);
             case null -> Mono.just(Mcp.Response.error(request.id(),
                     Mcp.Codes.INVALID_PARAMS, "missing method", null));
             default -> Mono.just(Mcp.Response.error(request.id(),
@@ -118,6 +126,265 @@ public class GatewayService {
                     return Mcp.Response.ok(request.id(),
                             new Mcp.ToolsListResult("complete", all, null, null, null));
                 });
+    }
+
+    /** Aggregates resources from every upstream, applying policy to each. */
+    private Mono<Mcp.Response> resourcesList(AccessToken caller, Mcp.Request request) {
+        return Flux.fromIterable(props.serverIds())
+                .flatMap(serverId -> fetchList(serverId, Mcp.METHOD_RESOURCES_LIST,
+                        Mcp.ResourcesListResult.class, Mcp.ResourcesListResult::resources)
+                        .map(list -> screenResources(caller, serverId, list))
+                        .onErrorResume(e -> upstreamFailed(caller, serverId,
+                                "resources/list", e, List.<Mcp.Resource>of())))
+                .collectList()
+                .map(lists -> {
+                    List<Mcp.Resource> all = new ArrayList<>();
+                    lists.forEach(all::addAll);
+                    return Mcp.Response.ok(request.id(),
+                            new Mcp.ResourcesListResult("complete", all, null, null, null));
+                });
+    }
+
+    /**
+     * Applies policy to each advertised resource.
+     *
+     * <p>URIs are not namespaced the way tool names are — a URI means something to the
+     * server and mangling it would change what it refers to — so the survivors are recorded
+     * in {@link SurfaceRouter} instead, which is also what makes an unadvertised read
+     * refusable.
+     */
+    private List<Mcp.Resource> screenResources(AccessToken caller, String serverId,
+                                               List<Mcp.Resource> resources) {
+        List<Mcp.Resource> allowed = new ArrayList<>();
+        java.util.Set<String> advertised = new java.util.LinkedHashSet<>();
+
+        for (Mcp.Resource resource : resources) {
+            var decision = policy.evaluateResource(caller, serverId, resource);
+            switch (decision) {
+                case PolicyEngine.Decision.Allow a -> {
+                    // Clamped before the model sees it: an unreviewed server does not get
+                    // to declare its own content mandatory.
+                    Mcp.Resource clamped = ResourceGuard.clampAnnotations(resource, false);
+                    List<String> evidence = ResourceGuard.clampEvidence(resource, clamped);
+
+                    audit.record(caller.subject(), serverId, resource.uri(), "advertise resource",
+                            AuditLog.Outcome.ALLOWED, a.reason(), evidence);
+                    allowed.add(clamped);
+                    advertised.add(resource.uri());
+                    router.advertised(serverId, resource.uri());
+                }
+                case PolicyEngine.Decision.Deny d -> audit.record(caller.subject(), serverId,
+                        resource.uri(), "advertise resource", AuditLog.Outcome.DENIED,
+                        d.reason(), d.evidence());
+                case PolicyEngine.Decision.NeedsApproval n -> audit.record(caller.subject(),
+                        serverId, resource.uri(), "advertise resource",
+                        AuditLog.Outcome.APPROVAL_REQUIRED, n.reason(), List.of());
+            }
+        }
+        // A resource the server has stopped offering stops resolving here too.
+        router.retainOnly(serverId, advertised);
+        return allowed;
+    }
+
+    /**
+     * Reads a resource, from the server that advertised it and no other.
+     *
+     * <p>The owner lookup is the control. A model can be talked into constructing a URI —
+     * a poisoned tool description saying "then read file:///etc/shadow" produces one that
+     * was never on any list — and a gateway that forwards whatever URI it is handed would
+     * pass that straight through.
+     */
+    private Mono<Mcp.Response> resourcesRead(AccessToken caller, Mcp.Request request) {
+        Object uriParam = request.params() == null ? null : request.params().get("uri");
+        String uri = uriParam == null ? null : String.valueOf(uriParam);
+
+        var owner = router.ownerOf(uri);
+        if (owner.isEmpty()) {
+            audit.record(caller.subject(), "-", String.valueOf(uri), "resources/read",
+                    AuditLog.Outcome.DENIED,
+                    "resource was never advertised through this gateway", List.of());
+            return Mono.just(Mcp.Response.error(request.id(), Mcp.Codes.POLICY_DENIED,
+                    "resource was never advertised through this gateway", null));
+        }
+        String serverId = owner.get();
+
+        // Re-checked at read time. Policy may have changed since the listing, and a client
+        // may read a URI it was offered an hour ago.
+        if (policy.evaluateResourceRead(caller, serverId, uri)
+                instanceof PolicyEngine.Decision.Deny d) {
+            audit.record(caller.subject(), serverId, uri, "resources/read",
+                    AuditLog.Outcome.DENIED, d.reason(), d.evidence());
+            return Mono.just(Mcp.Response.error(request.id(), Mcp.Codes.POLICY_DENIED,
+                    d.reason(), null));
+        }
+
+        Mcp.Request forwarded = new Mcp.Request("2.0", request.id(), Mcp.METHOD_RESOURCES_READ,
+                Map.of("uri", uri),
+                Map.of(Mcp.META_PROTOCOL_VERSION, Mcp.PROTOCOL_VERSION));
+
+        return upstream.send(serverId, forwarded)
+                .map(resp -> screenResourceContent(caller, serverId, uri, resp))
+                .onErrorResume(e -> {
+                    audit.record(caller.subject(), serverId, uri, "resources/read",
+                            AuditLog.Outcome.FAILED, "upstream error: " + e.getMessage(), List.of());
+                    return Mono.just(Mcp.Response.error(request.id(), Mcp.Codes.INTERNAL_ERROR,
+                            "upstream read failed", null));
+                });
+    }
+
+    /**
+     * Screens resource content on the way back.
+     *
+     * <p>Content reaches the model exactly as directly as a tool result does, and a server
+     * that cannot get instructions past the metadata scan will put them in the body.
+     */
+    private Mcp.Response screenResourceContent(AccessToken caller, String serverId,
+                                               String uri, Mcp.Response response) {
+        if (response.error() != null || response.result() == null) return response;
+
+        Mcp.ResourcesReadResult parsed;
+        try {
+            parsed = mapper.convertValue(response.result(), Mcp.ResourcesReadResult.class);
+        } catch (Exception e) {
+            return response;
+        }
+        if (parsed.contents() == null) return response;
+
+        for (Mcp.ResourceContents c : parsed.contents()) {
+            if (c.text() == null) continue;      // blobs are not scanned; see the README
+            var scan = scanner.scanContent(c.text());
+            if (!scan.clean() && scan.score() >= 50) {
+                audit.record(caller.subject(), serverId, uri, "resources/read result",
+                        AuditLog.Outcome.DENIED,
+                        "resource content contains adversarial instructions (score %d)"
+                                .formatted(scan.score()),
+                        scan.findings().stream().map(f -> f.rule() + ": " + f.evidence()).toList());
+                return Mcp.Response.error(response.id(), Mcp.Codes.POLICY_DENIED,
+                        "resource content was withheld: it contains injected instructions", null);
+            }
+        }
+        audit.record(caller.subject(), serverId, uri, "resources/read",
+                AuditLog.Outcome.ALLOWED, "content screened", List.of());
+        return response;
+    }
+
+    /** Aggregates prompts from every upstream, applying policy to each. */
+    private Mono<Mcp.Response> promptsList(AccessToken caller, Mcp.Request request) {
+        return Flux.fromIterable(props.serverIds())
+                .flatMap(serverId -> fetchList(serverId, Mcp.METHOD_PROMPTS_LIST,
+                        Mcp.PromptsListResult.class, Mcp.PromptsListResult::prompts)
+                        .map(list -> screenPrompts(caller, serverId, list))
+                        .onErrorResume(e -> upstreamFailed(caller, serverId,
+                                "prompts/list", e, List.<Mcp.Prompt>of())))
+                .collectList()
+                .map(lists -> {
+                    List<Mcp.Prompt> all = new ArrayList<>();
+                    lists.forEach(all::addAll);
+                    return Mcp.Response.ok(request.id(),
+                            new Mcp.PromptsListResult("complete", all, null, null, null));
+                });
+    }
+
+    private List<Mcp.Prompt> screenPrompts(AccessToken caller, String serverId,
+                                           List<Mcp.Prompt> prompts) {
+        List<Mcp.Prompt> allowed = new ArrayList<>();
+        for (Mcp.Prompt prompt : prompts) {
+            var decision = policy.evaluatePrompt(caller, serverId, prompt);
+            switch (decision) {
+                case PolicyEngine.Decision.Allow a -> {
+                    audit.record(caller.subject(), serverId, prompt.name(), "advertise prompt",
+                            AuditLog.Outcome.ALLOWED, a.reason(), List.of());
+                    // Namespaced like tools, because a prompt name is an opaque identifier
+                    // the gateway chooses how to present.
+                    allowed.add(new Mcp.Prompt(serverId + NS + prompt.name(), prompt.title(),
+                            prompt.description(), prompt.arguments(), prompt.icons()));
+                }
+                case PolicyEngine.Decision.Deny d -> audit.record(caller.subject(), serverId,
+                        prompt.name(), "advertise prompt", AuditLog.Outcome.DENIED,
+                        d.reason(), d.evidence());
+                case PolicyEngine.Decision.NeedsApproval n -> audit.record(caller.subject(),
+                        serverId, prompt.name(), "advertise prompt",
+                        AuditLog.Outcome.APPROVAL_REQUIRED, n.reason(), List.of());
+            }
+        }
+        return allowed;
+    }
+
+    /**
+     * Fetches a prompt, which returns messages that go straight into the conversation.
+     *
+     * <p>The most direct injection surface in the protocol: the result is not data the
+     * model reasons about, it is instructions the model was asked to follow.
+     */
+    private Mono<Mcp.Response> promptsGet(AccessToken caller, Mcp.Request request) {
+        Object nameParam = request.params() == null ? null : request.params().get("name");
+        String qualified = nameParam == null ? null : String.valueOf(nameParam);
+
+        int idx = qualified == null ? -1 : qualified.indexOf(NS);
+        if (idx <= 0) {
+            return Mono.just(Mcp.Response.error(request.id(), Mcp.Codes.INVALID_PARAMS,
+                    "prompt name must be namespaced as serverId" + NS + "promptName", null));
+        }
+        String serverId = qualified.substring(0, idx);
+        String name = qualified.substring(idx + NS.length());
+
+        if (!policy.isPromptPermitted(caller, serverId, name)) {
+            audit.record(caller.subject(), serverId, name, "prompts/get",
+                    AuditLog.Outcome.DENIED, "prompt not in allowlist", List.of());
+            return Mono.just(Mcp.Response.error(request.id(), Mcp.Codes.POLICY_DENIED,
+                    "prompt not in allowlist", null));
+        }
+
+        Map<String, Object> params = new LinkedHashMap<>(request.params());
+        params.put("name", name);
+
+        Mcp.Request forwarded = new Mcp.Request("2.0", request.id(), Mcp.METHOD_PROMPTS_GET,
+                params, Map.of(Mcp.META_PROTOCOL_VERSION, Mcp.PROTOCOL_VERSION));
+
+        return upstream.send(serverId, forwarded)
+                .map(resp -> {
+                    if (resp.error() == null && resp.result() != null) {
+                        var scan = scanner.scanContent(String.valueOf(resp.result()));
+                        if (!scan.clean() && scan.score() >= 50) {
+                            audit.record(caller.subject(), serverId, name, "prompts/get result",
+                                    AuditLog.Outcome.DENIED,
+                                    "prompt body contains adversarial instructions (score %d)"
+                                            .formatted(scan.score()), List.of());
+                            return Mcp.Response.error(resp.id(), Mcp.Codes.POLICY_DENIED,
+                                    "prompt was withheld: it contains injected instructions", null);
+                        }
+                    }
+                    audit.record(caller.subject(), serverId, name, "prompts/get",
+                            AuditLog.Outcome.ALLOWED, "screened", List.of());
+                    return resp;
+                })
+                .onErrorResume(e -> {
+                    audit.record(caller.subject(), serverId, name, "prompts/get",
+                            AuditLog.Outcome.FAILED, "upstream error: " + e.getMessage(), List.of());
+                    return Mono.just(Mcp.Response.error(request.id(), Mcp.Codes.INTERNAL_ERROR,
+                            "upstream prompt fetch failed", null));
+                });
+    }
+
+    /** Shared list-fetch for the surfaces that follow the same list/get shape. */
+    private <R, T> Mono<List<T>> fetchList(String serverId, String method, Class<R> resultType,
+                                           java.util.function.Function<R, List<T>> extract) {
+        Mcp.Request req = new Mcp.Request("2.0", "tg-" + method.replace('/', '-') + "-" + serverId,
+                method, Map.of(), Map.of(Mcp.META_PROTOCOL_VERSION, Mcp.PROTOCOL_VERSION));
+
+        return upstream.send(serverId, req).map(resp -> {
+            if (resp.error() != null || resp.result() == null) return List.<T>of();
+            List<T> items = extract.apply(mapper.convertValue(resp.result(), resultType));
+            return items == null ? List.<T>of() : items;
+        });
+    }
+
+    private <T> Mono<List<T>> upstreamFailed(AccessToken caller, String serverId, String action,
+                                             Throwable e, List<T> empty) {
+        audit.record(caller.subject(), serverId, "*", action, AuditLog.Outcome.FAILED,
+                "upstream error: " + e.getMessage(), List.of());
+        log.warn("upstream {} failed during {}: {}", serverId, action, e.toString());
+        return Mono.just(empty);
     }
 
     private Mono<List<Mcp.Tool>> fetchTools(String serverId) {

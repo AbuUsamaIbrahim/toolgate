@@ -87,16 +87,36 @@ public record PolicyBundle(
         Map<String, Map<String, ServerPolicy>> teamPolicies) {
 
     /**
-     * 1 had no team policies. Both are accepted — a schema bump that invalidates every
-     * published bundle turns a additive feature into a coordinated upgrade.
+     * 1 had no team policies; 2 governed tools only. All are accepted — a schema bump that
+     * invalidates every published bundle turns an additive feature into a coordinated
+     * upgrade, which is how fleets end up running old policy for months.
      */
-    public static final int SCHEMA_VERSION = 2;
-    public static final java.util.Set<Integer> READABLE_SCHEMA_VERSIONS = java.util.Set.of(1, 2);
+    public static final int SCHEMA_VERSION = 3;
+    public static final java.util.Set<Integer> READABLE_SCHEMA_VERSIONS =
+            java.util.Set.of(1, 2, 3);
 
-    public record ServerPolicy(Set<String> allow, Set<String> requireApproval) {
+    /**
+     * What one server may expose.
+     *
+     * <p>{@code allowResources} entries are exact, or a prefix ending in {@code *}.
+     * {@code allowedUriSchemes} defaults to nothing when a bundle is in force, because a
+     * bundle is authoritative — inheriting a default from the laptop would let local
+     * configuration widen what central policy permits.
+     */
+    public record ServerPolicy(Set<String> allow, Set<String> requireApproval,
+                               Set<String> allowResources, Set<String> allowPrompts,
+                               Set<String> allowedUriSchemes) {
         public ServerPolicy {
             allow = allow == null ? Set.of() : Set.copyOf(allow);
             requireApproval = requireApproval == null ? Set.of() : Set.copyOf(requireApproval);
+            allowResources = allowResources == null ? Set.of() : Set.copyOf(allowResources);
+            allowPrompts = allowPrompts == null ? Set.of() : Set.copyOf(allowPrompts);
+            allowedUriSchemes = allowedUriSchemes == null ? Set.of() : Set.copyOf(allowedUriSchemes);
+        }
+
+        /** Tools-only bundles from schema 1 and 2 deserialise through this. */
+        public ServerPolicy(Set<String> allow, Set<String> requireApproval) {
+            this(allow, requireApproval, Set.of(), Set.of(), Set.of());
         }
     }
 
@@ -124,6 +144,37 @@ public record PolicyBundle(
             if (extra.allow().contains(toolName)) return true;
         }
         return false;
+    }
+
+    public boolean allowsResource(String serverId, String uri, java.util.Set<String> teams) {
+        ServerPolicy base = servers == null ? null : servers.get(serverId);
+        if (base != null && dev.mahadi.toolgate.policy.ToolPolicyProperties
+                .matches(base.allowResources(), uri)) {
+            return true;
+        }
+        for (ServerPolicy extra : forTeams(serverId, teams)) {
+            if (dev.mahadi.toolgate.policy.ToolPolicyProperties
+                    .matches(extra.allowResources(), uri)) return true;
+        }
+        return false;
+    }
+
+    public boolean allowsPrompt(String serverId, String name, java.util.Set<String> teams) {
+        ServerPolicy base = servers == null ? null : servers.get(serverId);
+        if (base != null && base.allowPrompts().contains(name)) return true;
+        for (ServerPolicy extra : forTeams(serverId, teams)) {
+            if (extra.allowPrompts().contains(name)) return true;
+        }
+        return false;
+    }
+
+    /** Union across the base policy and the caller's teams. */
+    public java.util.Set<String> allowedUriSchemes(String serverId, java.util.Set<String> teams) {
+        java.util.Set<String> schemes = new java.util.LinkedHashSet<>();
+        ServerPolicy base = servers == null ? null : servers.get(serverId);
+        if (base != null) schemes.addAll(base.allowedUriSchemes());
+        forTeams(serverId, teams).forEach(p -> schemes.addAll(p.allowedUriSchemes()));
+        return schemes;
     }
 
     public boolean requiresApproval(String serverId, String toolName, java.util.Set<String> teams) {

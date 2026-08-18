@@ -226,8 +226,21 @@ toolgate:
   # servers:
   #   files:                    # ids must not contain underscores
   #     command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-  #     allow: [read_file, write_file]
+  #     allow: [read_file, write_file]          # tools
   #     require-approval: [write_file]
+  #
+  #     # Resources and prompts are governed the same way, and default to none.
+  #     # Resource rules are exact, or a prefix ending in `*` — not a regex, because
+  #     # a mis-written prefix allows too little and a mis-written regex allows too
+  #     # much, and only one of those is noticed.
+  #     allow-resources: ["file:///project/*"]
+  #     allow-prompts: [summarise]
+  #
+  #     # Which URI schemes a resource may use. `https` is absent on purpose: the
+  #     # spec lets a client fetch those directly, so the content would never pass
+  #     # through this gateway and nothing would screen it. Add it only if you mean
+  #     # to give that up.
+  #     allowed-uri-schemes: [file, git]
   #
   #   internal:
   #     url: http://localhost:9001

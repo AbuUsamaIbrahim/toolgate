@@ -47,6 +47,24 @@ public class ToolPolicyProperties {
         /** Subset of {@link #allow} that additionally requires human approval to call. */
         private Set<String> requireApproval = Set.of();
         /**
+         * Resource URIs this agent may see. Exact, or a prefix ending in {@code *}.
+         *
+         * <p>Prefixes rather than regular expressions on purpose: {@code file:///project/*}
+         * is a rule a reviewer can evaluate at a glance, and the failure mode of a
+         * mis-written prefix is that too little is allowed. A mis-written regex fails the
+         * other way, and nobody notices.
+         */
+        private Set<String> allowResources = Set.of();
+        /** Prompt names this agent may see. */
+        private Set<String> allowPrompts = Set.of();
+        /**
+         * URI schemes permitted on resources from this server.
+         *
+         * <p>{@code https} is absent by default: the spec lets clients fetch those
+         * directly, so the content would never pass through this gateway.
+         */
+        private Set<String> allowedUriSchemes = Set.of("file", "git");
+        /**
          * The gateway's own credential for this upstream, if it requires one. Never the
          * caller's token — see {@code UpstreamClient} for why that distinction matters.
          */
@@ -62,6 +80,12 @@ public class ToolPolicyProperties {
         public void setAllow(Set<String> allow) { this.allow = allow; }
         public Set<String> getRequireApproval() { return requireApproval; }
         public void setRequireApproval(Set<String> requireApproval) { this.requireApproval = requireApproval; }
+        public Set<String> getAllowResources() { return allowResources; }
+        public void setAllowResources(Set<String> allowResources) { this.allowResources = allowResources; }
+        public Set<String> getAllowPrompts() { return allowPrompts; }
+        public void setAllowPrompts(Set<String> allowPrompts) { this.allowPrompts = allowPrompts; }
+        public Set<String> getAllowedUriSchemes() { return allowedUriSchemes; }
+        public void setAllowedUriSchemes(Set<String> allowedUriSchemes) { this.allowedUriSchemes = allowedUriSchemes; }
         public String getToken() { return token; }
         public void setToken(String token) { this.token = token; }
     }
@@ -74,6 +98,39 @@ public class ToolPolicyProperties {
         Server server = servers.get(serverId);
         if (server == null || toolName == null) return false;
         return server.getAllow().contains(toolName);
+    }
+
+    /**
+     * Exact match, or a prefix when the rule ends in {@code *}.
+     *
+     * <p>Deliberately not a glob or a regex. A resource allowlist is a security control an
+     * auditor reads, and the two-rule version can be understood without running it.
+     */
+    public static boolean matches(Set<String> rules, String value) {
+        if (value == null) return false;
+        for (String rule : rules) {
+            if (rule.endsWith("*")) {
+                if (value.startsWith(rule.substring(0, rule.length() - 1))) return true;
+            } else if (rule.equals(value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean isResourceAllowed(String serverId, String uri) {
+        Server server = servers.get(serverId);
+        return server != null && matches(server.getAllowResources(), uri);
+    }
+
+    public boolean isPromptAllowed(String serverId, String name) {
+        Server server = servers.get(serverId);
+        return server != null && server.getAllowPrompts().contains(name);
+    }
+
+    public Set<String> allowedUriSchemes(String serverId) {
+        Server server = servers.get(serverId);
+        return server == null ? Set.of() : server.getAllowedUriSchemes();
     }
 
     public boolean requiresApproval(String serverId, String toolName) {

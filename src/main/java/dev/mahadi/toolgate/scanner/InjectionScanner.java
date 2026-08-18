@@ -89,6 +89,21 @@ public class InjectionScanner {
         return new Result(List.copyOf(findings));
     }
 
+    /**
+     * Scans the model-visible metadata of a resource or a prompt.
+     *
+     * <p>Named fields rather than an object, because resources and prompts have different
+     * shapes but the same three strings that reach the model, and a scanner that knows
+     * about every record type would need editing every time the protocol grows one.
+     */
+    public Result scan(String name, String title, String description) {
+        List<Finding> findings = new ArrayList<>();
+        scanText(findings, "name", name);
+        scanText(findings, "title", title);
+        scanText(findings, "description", description);
+        return new Result(List.copyOf(findings));
+    }
+
     /** Scans tool output, which reaches the model just as directly as a description. */
     public Result scanContent(String text) {
         List<Finding> findings = new ArrayList<>();

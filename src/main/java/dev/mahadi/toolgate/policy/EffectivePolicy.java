@@ -59,6 +59,33 @@ public class EffectivePolicy {
                 .orElseGet(() -> local.requiresApproval(serverId, toolName));
     }
 
+    public boolean isResourceAllowed(java.util.Set<String> teams, String serverId, String uri) {
+        if (failedClosed()) return false;
+        return bundle()
+                .map(b -> b.allowsResource(serverId, uri, teams))
+                .orElseGet(() -> local.isResourceAllowed(serverId, uri));
+    }
+
+    public boolean isPromptAllowed(java.util.Set<String> teams, String serverId, String name) {
+        if (failedClosed()) return false;
+        return bundle()
+                .map(b -> b.allowsPrompt(serverId, name, teams))
+                .orElseGet(() -> local.isPromptAllowed(serverId, name));
+    }
+
+    /**
+     * Which URI schemes a resource from this server may use.
+     *
+     * <p>When a bundle is in force its answer stands even if empty — inheriting the
+     * laptop's default would let local configuration widen what central policy allows,
+     * which is the merge this design refuses everywhere else.
+     */
+    public java.util.Set<String> allowedUriSchemes(java.util.Set<String> teams, String serverId) {
+        return bundle()
+                .map(b -> b.allowedUriSchemes(serverId, teams))
+                .orElseGet(() -> local.allowedUriSchemes(serverId));
+    }
+
     public int blockThreshold() {
         return bundle().map(PolicyBundle::blockThreshold).orElseGet(local::getBlockThreshold);
     }

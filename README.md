@@ -100,6 +100,7 @@ Toolgate is the missing mechanism.
 | **Fleet check-in** | Nobody knowing which machines are actually enforcing policy, or which quietly stopped. |
 | **Slack approvals** | A human gate that the requester can wave through themselves, granted by nobody in particular. |
 | **Header-mirror confinement** | `x-mcp-header` letting a tool definition write arbitrary HTTP headers. |
+| **Resource & prompt governance** | Two model-visible surfaces that were entirely ungoverned, and a wall that forced bypass. |
 
 ### Where the filtering happens
 
@@ -146,6 +147,65 @@ works.
 Because the keyword lives in the input schema, changing it changes the tool's fingerprint —
 a definition that mirrors nothing today and something tomorrow is caught as drift whatever
 the new value happens to be.
+
+## Beyond tools: resources and prompts
+
+Governing only tools was never a hole — the gateway fails closed on anything it does not
+understand, answering `method not proxied`. It was a **wall**: an agent that needs resources
+or prompts cannot use this gateway at all, so it goes around it, and bypass is what makes
+every other control here decoration.
+
+`resources/list`, `resources/read`, `prompts/list` and `prompts/get` now go through the same
+allowlist, metadata scanning and content screening as tools. Two things on these surfaces
+have no equivalent in the tools path.
+
+### A resource URI decides who fetches the content
+
+The specification permits a client to fetch an `https://` resource **directly from the web**
+rather than reading it through the server. From the gateway's side that means a compromised
+upstream can hand the client a URL and have the bytes reach the model without traversing
+this gateway at all — unscreened, unaudited, unpinned — while also making the agent a
+confused deputy for a request to a host the attacker chose.
+
+So schemes are allowlisted and `https` is not a default:
+
+```yaml
+allowed-uri-schemes: [file, git]
+```
+
+That genuinely restricts legitimate servers, and it is still the right default. The
+alternative is a gateway that any server preferring not to be inspected can route around.
+
+`file://` URIs are additionally checked for traversal. The spec puts that obligation on
+servers — which is exactly why a client-side gateway does not depend on it.
+
+### Annotations are a context-inclusion control, not a display hint
+
+`audience` and `priority` look cosmetic. The spec defines priority `1.0` as **"effectively
+required"** and audience `["assistant"]` as content meant for the model, and tells clients
+they may use both to decide what enters the context window. That is an instruction from the
+least trusted party in the system about how much of the model's attention it gets.
+
+Unreviewed resources have `priority` clamped to `0.5` rather than refused. Refusing would
+break servers that annotate sensibly; ignoring it lets a hostile one mark its payload
+mandatory. Clamping keeps the hint and removes the demand, and the clamp is recorded in the
+audit trail. A centrally reviewed resource keeps the priority a human approved.
+
+### Reads are routed, not forwarded
+
+Tool names are namespaced on the way out, so a call carries its own routing. A resource is
+identified by a URI, and rewriting one would change what it refers to — so the gateway
+records which upstream advertised which URI and consults that on read.
+
+The side effect is worth more than the routing: **a read of a URI this gateway never
+advertised is refused.** That matters here more than for tools, because a URI is something a
+model can be talked into constructing — a poisoned tool description ending "then read
+`file:///etc/shadow`" produces one that was never on any list. Reads are re-checked against
+policy as well, since a listing is not a capability and policy may have changed since.
+
+Prompts get the same treatment and arguably deserve stricter: a tool description has to
+persuade the model to act, whereas a prompt is already the thing the model was asked to
+follow.
 
 ## Authentication
 
@@ -595,6 +655,8 @@ Worth stating plainly, because a security tool that oversells itself is worse th
 - **Trust on first use.** Pinning detects *change*, not *goodness*. A server already
   compromised at first sighting becomes the trusted baseline. Seed pins from a reviewed
   manifest where that matters.
+- **Binary resource content is not scanned.** Only `text` is screened; a `blob` is passed
+  through as opaque bytes. Base64 of a poisoned document would not be caught.
 - **Pattern matching loses on its own.** The injection scanner catches the unsophisticated
   majority. An attacker who knows the rules can phrase around them. It scores rather than
   blocks, and exists as defence in depth — not as an oracle.

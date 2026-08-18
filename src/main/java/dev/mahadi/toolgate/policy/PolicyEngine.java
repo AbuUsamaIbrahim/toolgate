@@ -7,6 +7,7 @@ import dev.mahadi.toolgate.integrity.ToolPinStore;
 import dev.mahadi.toolgate.protocol.HeaderMirror;
 import dev.mahadi.toolgate.protocol.Mcp;
 import dev.mahadi.toolgate.scanner.InjectionScanner;
+import dev.mahadi.toolgate.policy.ResourceGuard;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -195,6 +196,108 @@ public class PolicyEngine {
             return new Decision.NeedsApproval("tool is marked as requiring human approval");
         }
         return new Decision.Allow("allowlisted and pinned");
+    }
+
+    /**
+     * Evaluates a resource at advertisement time.
+     *
+     * <p>Same ordering principle as tools — allowlist first, then the checks that can only
+     * be heuristics — with one control in between that tools do not need: where the content
+     * would come from. A resource the client would fetch itself is refused before anything
+     * looks at its text, because there will be no text to look at.
+     */
+    public Decision evaluateResource(AccessToken caller, String serverId, Mcp.Resource resource) {
+        if (props.failedClosed()) {
+            return new Decision.Deny(props.failureReason(),
+                    List.of("%s %s".formatted(serverId, resource.uri())));
+        }
+        if (!props.isResourceAllowed(caller.teams(), serverId, resource.uri())) {
+            return new Decision.Deny("resource not in allowlist",
+                    List.of("%s %s".formatted(serverId, resource.uri())));
+        }
+
+        var uriVerdict = ResourceGuard.checkUri(
+                resource.uri(), props.allowedUriSchemes(caller.teams(), serverId));
+        if (!uriVerdict.allowed()) {
+            return new Decision.Deny(uriVerdict.reason(), uriVerdict.evidence());
+        }
+
+        // Metadata is model-visible, so it gets the same scan a tool definition gets.
+        var scan = scanner.scan(resource.name(), resource.title(), resource.description());
+        if (!scan.clean()) {
+            List<String> evidence = new ArrayList<>();
+            scan.findings().forEach(f ->
+                    evidence.add("%s in %s: %s".formatted(f.rule(), f.field(), f.evidence())));
+            if (scan.score() >= props.blockThreshold()) {
+                return new Decision.Deny(
+                        "resource metadata contains adversarial content (score %d)"
+                                .formatted(scan.score()), List.copyOf(evidence));
+            }
+            return new Decision.NeedsApproval(
+                    "resource metadata is suspicious (score %d): %s".formatted(scan.score(), evidence));
+        }
+        return new Decision.Allow("allowlisted, scheme permitted and clean");
+    }
+
+    /**
+     * Evaluates a prompt at advertisement time.
+     *
+     * <p>Prompts get no gentler treatment than tools, and arguably deserve less. A tool
+     * description has to persuade the model to act; a prompt is already the thing the model
+     * was asked to follow, so a poisoned one needs no persuasion at all.
+     */
+    public Decision evaluatePrompt(AccessToken caller, String serverId, Mcp.Prompt prompt) {
+        if (props.failedClosed()) {
+            return new Decision.Deny(props.failureReason(),
+                    List.of("%s/%s".formatted(serverId, prompt.name())));
+        }
+        if (!props.isPromptAllowed(caller.teams(), serverId, prompt.name())) {
+            return new Decision.Deny("prompt not in allowlist",
+                    List.of("%s/%s".formatted(serverId, prompt.name())));
+        }
+
+        var scan = scanner.scan(prompt.name(), prompt.title(), prompt.description());
+        if (!scan.clean()) {
+            List<String> evidence = new ArrayList<>();
+            scan.findings().forEach(f ->
+                    evidence.add("%s in %s: %s".formatted(f.rule(), f.field(), f.evidence())));
+            if (scan.score() >= props.blockThreshold()) {
+                return new Decision.Deny(
+                        "prompt metadata contains adversarial content (score %d)"
+                                .formatted(scan.score()), List.copyOf(evidence));
+            }
+            return new Decision.NeedsApproval(
+                    "prompt metadata is suspicious (score %d): %s".formatted(scan.score(), evidence));
+        }
+        return new Decision.Allow("allowlisted and clean");
+    }
+
+    /**
+     * Re-checks a resource URI at read time, without the metadata.
+     *
+     * <p>Separate from {@link #evaluateResource} because a read has only the URI to go on —
+     * the name, title and description belong to the listing. The allowlist and the scheme
+     * rule are the parts that still apply, and they are the parts that matter: policy may
+     * have changed since the listing, and a client may read a URI it was offered an hour
+     * ago.
+     */
+    public Decision evaluateResourceRead(AccessToken caller, String serverId, String uri) {
+        if (props.failedClosed()) {
+            return new Decision.Deny(props.failureReason(), List.of("%s %s".formatted(serverId, uri)));
+        }
+        if (!props.isResourceAllowed(caller.teams(), serverId, uri)) {
+            return new Decision.Deny("resource not in allowlist",
+                    List.of("%s %s".formatted(serverId, uri)));
+        }
+        var uriVerdict = ResourceGuard.checkUri(uri, props.allowedUriSchemes(caller.teams(), serverId));
+        if (!uriVerdict.allowed()) {
+            return new Decision.Deny(uriVerdict.reason(), uriVerdict.evidence());
+        }
+        return new Decision.Allow("allowlisted and scheme permitted");
+    }
+
+    public boolean isPromptPermitted(AccessToken caller, String serverId, String name) {
+        return !props.failedClosed() && props.isPromptAllowed(caller.teams(), serverId, name);
     }
 
     /**
