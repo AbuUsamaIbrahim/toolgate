@@ -77,10 +77,18 @@ public class StdioServer implements ApplicationRunner {
      * framing for everything after it.
      */
     private void forwardNotification(BufferedWriter out, String serverId, Mcp.Request notification) {
-        if (!gate.permit(serverId, notification)) return;
+        var verdict = gate.evaluate(serverId, notification);
+        if (!(verdict instanceof dev.mahadi.toolgate.gateway.NotificationGate.Verdict.Forward f)) {
+            return;
+        }
+
+        Mcp.Request outbound = f.clientSubscriptionId() == null
+                ? notification
+                : withSubscriptionId(notification, f.clientSubscriptionId());
+
         try {
             synchronized (out) {
-                out.write(mapper.writeValueAsString(notification));
+                out.write(mapper.writeValueAsString(outbound));
                 out.write('\n');
                 out.flush();
             }
@@ -88,6 +96,31 @@ public class StdioServer implements ApplicationRunner {
             log.warn("failed forwarding {} from {}: {}",
                     notification.method(), serverId, e.toString());
         }
+    }
+
+    /**
+     * Replaces the subscription id with the one the client issued.
+     *
+     * <p>The upstream's id is meaningless to the client and dangerous to relay: a client
+     * running two subscriptions would otherwise be one hostile server away from having
+     * notifications delivered into the wrong stream.
+     */
+    private static Mcp.Request withSubscriptionId(Mcp.Request notification, String clientId) {
+        java.util.Map<String, Object> params =
+                new java.util.LinkedHashMap<>(notification.params() == null
+                        ? java.util.Map.of() : notification.params());
+
+        java.util.Map<String, Object> meta =
+                params.get("_meta") instanceof java.util.Map<?, ?> existing
+                        ? new java.util.LinkedHashMap<>(
+                                (java.util.Map<String, Object>) existing)
+                        : new java.util.LinkedHashMap<>();
+
+        meta.put(dev.mahadi.toolgate.gateway.NotificationGate.SUBSCRIPTION_ID, clientId);
+        params.put("_meta", meta);
+
+        return new Mcp.Request(notification.jsonrpc(), null, notification.method(),
+                params, notification._meta());
     }
 
     @Override
@@ -134,6 +167,13 @@ public class StdioServer implements ApplicationRunner {
 
         // Notifications get no response. Replying to one is a protocol violation.
         if (request.isNotification()) {
+            // Except that one of them means something to the gateway: a cancellation has
+            // to tear down the upstream subscriptions opened on the client's behalf, or
+            // they leak for the life of the process.
+            if (Mcp.NOTIFICATION_CANCELLED.equals(request.method()) && request.params() != null) {
+                Object id = request.params().get("requestId");
+                if (id != null) gateway.cancelSubscription(String.valueOf(id));
+            }
             log.debug("notification: {}", request.method());
             return;
         }

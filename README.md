@@ -102,6 +102,7 @@ Toolgate is the missing mechanism.
 | **Header-mirror confinement** | `x-mcp-header` letting a tool definition write arbitrary HTTP headers. |
 | **Resource & prompt governance** | Two model-visible surfaces that were entirely ungoverned, and a wall that forced bypass. |
 | **Notification gate** | The upstream speaking unprompted — to announce changes to things nobody is watching, or in a loop. |
+| **Subscription fan-out** | One client stream becoming several upstream streams, and a server delivering into the wrong one. |
 
 ### Where the filtering happens
 
@@ -290,6 +291,43 @@ legitimate update, one for `file:///etc/shadow`, one invented notification kind,
   DENIED  chatty  file:///etc/shadow                update for a resource that was never advertised
   DENIED  chatty  notifications/tools/list_changed  notification rate exceeded
 ```
+
+### Subscriptions: one stream in, several out
+
+`subscriptions/listen` is a long-lived request whose JSON-RPC id *becomes* the subscription
+id, and every notification carries it so a client can demultiplex several concurrent
+streams. A client sends one to the gateway; the gateway opens one to each upstream that can
+serve part of the filter. Several streams come back and have to look like the one that was
+asked for.
+
+**The subscription id is rewritten, never relayed.** The id belongs to whoever opened the
+subscription, and upstream is a different party from the client. Relay it and the client
+demultiplexes against an id it never issued — and a client holding two subscriptions is one
+hostile server away from having notifications delivered into the wrong one. Server A,
+serving subscription 1, simply stamps its messages with 2; the client attributes them to a
+subscription about entirely different resources, and nothing in the protocol contradicts it.
+
+Resolution is therefore keyed on **the sender as well as the id**, so a server claiming
+another's subscription resolves to nothing rather than to somebody else's stream.
+
+**The filter is enforced, not trusted.** The spec says a server *MUST NOT* send notification
+types the client did not request. Toolgate checks it, which is the recurring point of this
+project: a gateway that can verify a MUST is worth more than a specification that states
+one. A `tools/list_changed` arriving on a subscription that asked only for resource updates
+is dropped and audited.
+
+**The filter is narrowed on the way out.** A client may only subscribe to resource URIs it
+could have read anyway — subscribing is weaker than reading, but it still tells a server
+which paths interest this agent. And each upstream is told only about its own URIs; sending
+every server the full list would leak which other servers this agent is watching.
+
+**The acknowledgement is synthesised, not relayed.** It describes what the *gateway* agreed
+to, across all upstreams. Relaying one server's would describe that server's opinion of a
+subscription spanning several, and would carry its id.
+
+Cancellation tears down the upstream subscriptions. One upstream dying does not cancel the
+client's subscription — the others are still serving it, and doing otherwise would let a
+single crashy server silence every other.
 
 **Only stdio carries notifications.** Streamable HTTP delivers server-initiated messages
 over SSE, which this gateway does not implement — so over HTTP they never arrive at all.

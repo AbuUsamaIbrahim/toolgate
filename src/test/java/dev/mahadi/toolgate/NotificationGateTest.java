@@ -22,14 +22,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 class NotificationGateTest {
 
     private SurfaceRouter router;
+    private dev.mahadi.toolgate.gateway.SubscriptionRegistry subscriptions;
     private NotificationGate gate;
     private List<AuditLog.Entry> recorded;
 
     @BeforeEach
     void setUp() {
         router = new SurfaceRouter();
+        subscriptions = new dev.mahadi.toolgate.gateway.SubscriptionRegistry();
         recorded = new ArrayList<>();
-        gate = new NotificationGate(router, new AuditLog(List.of((AuditSink) recorded::add)));
+        gate = new NotificationGate(router, subscriptions,
+                new AuditLog(List.of((AuditSink) recorded::add)));
     }
 
     private static Mcp.Request notification(String method, Map<String, Object> params) {

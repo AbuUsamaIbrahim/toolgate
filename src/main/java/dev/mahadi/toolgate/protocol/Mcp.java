@@ -29,6 +29,10 @@ public final class Mcp {
     public static final String METHOD_RESOURCE_TEMPLATES_LIST = "resources/templates/list";
     public static final String METHOD_PROMPTS_LIST = "prompts/list";
     public static final String METHOD_PROMPTS_GET = "prompts/get";
+    public static final String METHOD_SUBSCRIPTIONS_LISTEN = "subscriptions/listen";
+    public static final String NOTIFICATION_CANCELLED = "notifications/cancelled";
+    public static final String NOTIFICATION_SUBSCRIPTION_ACK =
+            "notifications/subscriptions/acknowledged";
 
     private Mcp() {}
 

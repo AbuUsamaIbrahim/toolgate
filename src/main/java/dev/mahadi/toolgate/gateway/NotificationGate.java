@@ -59,12 +59,91 @@ public class NotificationGate {
     private static final Duration WINDOW = Duration.ofMinutes(1);
 
     private final SurfaceRouter router;
+    private final SubscriptionRegistry subscriptions;
     private final AuditLog audit;
     private final Map<String, Window> windows = new ConcurrentHashMap<>();
 
-    public NotificationGate(SurfaceRouter router, AuditLog audit) {
+    public NotificationGate(SurfaceRouter router, SubscriptionRegistry subscriptions,
+                            AuditLog audit) {
         this.router = router;
+        this.subscriptions = subscriptions;
         this.audit = audit;
+    }
+
+    /** What the gateway decided about one inbound notification. */
+    public sealed interface Verdict {
+        /** Forward it, after replacing the subscription id with the client's own. */
+        record Forward(String clientSubscriptionId) implements Verdict {}
+        record Drop(String reason) implements Verdict {}
+    }
+
+    public static final String SUBSCRIPTION_ID = "io.modelcontextprotocol/subscriptionId";
+
+    /**
+     * Decides an inbound notification when subscriptions are in play.
+     *
+     * <p>Three things are checked that {@link #permit} does not, and each corresponds to a
+     * requirement the specification places on servers — which is the case for checking
+     * them here, since a gateway exists precisely because a server's compliance cannot be
+     * assumed:
+     *
+     * <ul>
+     *   <li><b>It belongs to a subscription this upstream actually opened.</b> Resolution
+     *       is keyed on the sender as well as the id, so a server stamping another's
+     *       subscription id resolves to nothing. Without that, a client running two
+     *       subscriptions is one hostile server away from having notifications delivered
+     *       into the wrong stream.</li>
+     *   <li><b>The client asked for this type.</b> The spec says a server MUST NOT send
+     *       types the client did not request. Servers that do are either buggy or
+     *       probing.</li>
+     *   <li><b>The URI is one the client actually subscribed to</b>, not merely one the
+     *       server would like it to re-read.</li>
+     * </ul>
+     */
+    public Verdict evaluate(String serverId, Mcp.Request notification) {
+        String method = notification.method();
+        if (method == null) return new Verdict.Drop("no method");
+
+        Object claimed = subscriptionIdOf(notification);
+        if (claimed == null) {
+            // Outside any subscription. Falls back to the unsolicited rules, which are
+            // stricter about resources/updated and looser about list_changed.
+            return permit(serverId, notification)
+                    ? new Verdict.Forward(null)
+                    : new Verdict.Drop("refused as an unsolicited notification");
+        }
+
+        var subscription = subscriptions.resolve(serverId, String.valueOf(claimed));
+        if (subscription.isEmpty()) {
+            audit.record("-", serverId, method, "notification", AuditLog.Outcome.DENIED,
+                    "notification carries a subscription id this upstream was never given",
+                    List.of("claimed=" + claimed));
+            return new Verdict.Drop("unknown subscription");
+        }
+
+        String uri = uriOf(notification);
+        if (!subscription.get().granted().admits(method, uri)) {
+            audit.record("-", serverId, uri == null ? method : uri, "notification",
+                    AuditLog.Outcome.DENIED,
+                    "server sent a notification type the client did not subscribe to",
+                    List.of("method=" + method));
+            return new Verdict.Drop("outside the agreed filter");
+        }
+
+        if (!withinRate(serverId, method)) return new Verdict.Drop("rate exceeded");
+
+        return new Verdict.Forward(subscription.get().clientId());
+    }
+
+    private static Object subscriptionIdOf(Mcp.Request notification) {
+        Object params = notification.params() == null ? null : notification.params().get("_meta");
+        if (params instanceof Map<?, ?> meta) return meta.get(SUBSCRIPTION_ID);
+        return null;
+    }
+
+    private static String uriOf(Mcp.Request notification) {
+        Object uri = notification.params() == null ? null : notification.params().get("uri");
+        return uri == null ? null : String.valueOf(uri);
     }
 
     private static final class Window {

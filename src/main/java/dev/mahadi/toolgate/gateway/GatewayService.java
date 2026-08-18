@@ -56,13 +56,14 @@ public class GatewayService {
     private final Notifier notifier;
     private final SlackNotifier slack;
     private final SurfaceRouter router;
+    private final SubscriptionRegistry subscriptions;
     private final ObjectMapper mapper;
 
     public GatewayService(ToolPolicyProperties props, PolicyEngine policy,
                           UpstreamClient upstream, InjectionScanner scanner,
                           ApprovalStore approvals, AuditLog audit,
                           Notifier notifier, SlackNotifier slack, SurfaceRouter router,
-                          ObjectMapper mapper) {
+                          SubscriptionRegistry subscriptions, ObjectMapper mapper) {
         this.props = props;
         this.policy = policy;
         this.upstream = upstream;
@@ -72,6 +73,7 @@ public class GatewayService {
         this.notifier = notifier;
         this.slack = slack;
         this.router = router;
+        this.subscriptions = subscriptions;
         this.mapper = mapper;
     }
 
@@ -85,6 +87,7 @@ public class GatewayService {
             case Mcp.METHOD_RESOURCE_TEMPLATES_LIST -> templatesList(caller, request);
             case Mcp.METHOD_PROMPTS_LIST -> promptsList(caller, request);
             case Mcp.METHOD_PROMPTS_GET -> promptsGet(caller, request);
+            case Mcp.METHOD_SUBSCRIPTIONS_LISTEN -> subscriptionsListen(caller, request);
             case null -> Mono.just(Mcp.Response.error(request.id(),
                     Mcp.Codes.INVALID_PARAMS, "missing method", null));
             default -> Mono.just(Mcp.Response.error(request.id(),
@@ -417,6 +420,135 @@ public class GatewayService {
                     return Mono.just(Mcp.Response.error(request.id(), Mcp.Codes.INTERNAL_ERROR,
                             "upstream prompt fetch failed", null));
                 });
+    }
+
+    /**
+     * Opens a subscription, fanning one client request out to the upstreams.
+     *
+     * <p>The client asks once; the gateway asks each server that can serve part of the
+     * filter, and the several streams that come back have to look like the one the client
+     * requested. {@link SubscriptionRegistry} holds that mapping, and rewrites the
+     * subscription id on the way out.
+     *
+     * <p>The filter is narrowed before it leaves. A client may only subscribe to resource
+     * URIs it could have read anyway — subscribing is a weaker operation than reading, but
+     * it still tells a server which paths interest this agent, and a URI outside the
+     * allowlist has no business being named to anyone.
+     */
+    private Mono<Mcp.Response> subscriptionsListen(AccessToken caller, Mcp.Request request) {
+        String clientId = String.valueOf(request.id());
+        var requested = filterOf(request);
+
+        if (requested.wantsNothing()) {
+            return Mono.just(Mcp.Response.error(request.id(), Mcp.Codes.INVALID_PARAMS,
+                    "subscriptions/listen with an empty notification filter", null));
+        }
+
+        // Resource URIs are narrowed to those this caller could read.
+        java.util.Set<String> permittedUris = new java.util.LinkedHashSet<>();
+        for (String uri : requested.resourceSubscriptions()) {
+            var owner = router.ownerOf(uri);
+            if (owner.isPresent()
+                    && policy.evaluateResourceRead(caller, owner.get(), uri)
+                    instanceof PolicyEngine.Decision.Allow) {
+                permittedUris.add(uri);
+            } else {
+                audit.record(caller.subject(), owner.orElse("-"), uri, "subscriptions/listen",
+                        AuditLog.Outcome.DENIED,
+                        "cannot subscribe to a resource this caller cannot read", List.of());
+            }
+        }
+
+        var granted = new SubscriptionRegistry.Filter(
+                requested.toolsListChanged(), requested.promptsListChanged(),
+                requested.resourcesListChanged(), permittedUris);
+
+        if (granted.wantsNothing()) {
+            return Mono.just(Mcp.Response.error(request.id(), Mcp.Codes.POLICY_DENIED,
+                    "nothing in the requested filter is permitted for this caller", null));
+        }
+
+        // One upstream subscription per server, with an id the gateway chose. Long-lived
+        // by nature, so these are fired without waiting: the acknowledgement the client
+        // needs is the gateway's own, describing what the gateway agreed to.
+        Map<String, String> upstreamIds = new LinkedHashMap<>();
+        for (String serverId : props.serverIds()) {
+            String upstreamId = "tg-sub-" + clientId + "-" + serverId;
+            upstreamIds.put(serverId, upstreamId);
+
+            Map<String, Object> params = new LinkedHashMap<>();
+            params.put("notifications", notificationFilter(granted, serverId));
+
+            upstream.send(serverId, new Mcp.Request("2.0", upstreamId,
+                            Mcp.METHOD_SUBSCRIPTIONS_LISTEN, params,
+                            Map.of(Mcp.META_PROTOCOL_VERSION, Mcp.PROTOCOL_VERSION)))
+                    .subscribe(r -> { }, e -> log.debug("subscription to {} ended: {}",
+                            serverId, e.toString()));
+        }
+
+        subscriptions.open(clientId, granted, upstreamIds);
+        audit.record(caller.subject(), "*", "subscription", "subscriptions/listen",
+                AuditLog.Outcome.ALLOWED, "subscription opened",
+                List.of("resources=" + permittedUris.size(),
+                        "upstreams=" + upstreamIds.size()));
+
+        // The acknowledgement is synthesised rather than relayed, and says what the
+        // GATEWAY agreed to. Relaying an upstream's would describe one server's opinion of
+        // a subscription that spans several, and would carry that server's id.
+        Map<String, Object> ack = new LinkedHashMap<>();
+        ack.put("_meta", Map.of(NotificationGate.SUBSCRIPTION_ID, request.id()));
+        ack.put("notifications", notificationFilter(granted, null));
+        return Mono.just(Mcp.Response.ok(request.id(), Map.of(
+                "resultType", "accepted",
+                "acknowledged", ack)));
+    }
+
+    /** Reads the client's requested filter, defaulting every field to off. */
+    private SubscriptionRegistry.Filter filterOf(Mcp.Request request) {
+        Object raw = request.params() == null ? null : request.params().get("notifications");
+        if (!(raw instanceof Map<?, ?> f)) {
+            return new SubscriptionRegistry.Filter(false, false, false, java.util.Set.of());
+        }
+        java.util.Set<String> uris = new java.util.LinkedHashSet<>();
+        if (f.get("resourceSubscriptions") instanceof List<?> list) {
+            list.forEach(u -> uris.add(String.valueOf(u)));
+        }
+        return new SubscriptionRegistry.Filter(
+                Boolean.TRUE.equals(f.get("toolsListChanged")),
+                Boolean.TRUE.equals(f.get("promptsListChanged")),
+                Boolean.TRUE.equals(f.get("resourcesListChanged")),
+                uris);
+    }
+
+    /**
+     * Renders a filter for the wire.
+     *
+     * <p>With a {@code serverId}, only the URIs that server owns are included — telling
+     * every upstream the full list would leak which other servers this agent is watching,
+     * and each of them only needs its own.
+     */
+    private Map<String, Object> notificationFilter(SubscriptionRegistry.Filter filter,
+                                                   String serverId) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (filter.toolsListChanged()) out.put("toolsListChanged", true);
+        if (filter.promptsListChanged()) out.put("promptsListChanged", true);
+        if (filter.resourcesListChanged()) out.put("resourcesListChanged", true);
+
+        List<String> uris = filter.resourceSubscriptions().stream()
+                .filter(u -> serverId == null || serverId.equals(router.ownerOf(u).orElse(null)))
+                .toList();
+        if (!uris.isEmpty()) out.put("resourceSubscriptions", uris);
+        return out;
+    }
+
+    /** Tears down a subscription the client cancelled. */
+    public void cancelSubscription(String clientSubscriptionId) {
+        Map<String, String> upstreamIds = subscriptions.cancel(clientSubscriptionId);
+        upstreamIds.forEach((serverId, upstreamId) -> upstream.send(serverId,
+                        new Mcp.Request("2.0", null, Mcp.NOTIFICATION_CANCELLED,
+                                Map.of("requestId", upstreamId),
+                                Map.of(Mcp.META_PROTOCOL_VERSION, Mcp.PROTOCOL_VERSION)))
+                .subscribe(r -> { }, e -> { }));
     }
 
     /** Shared list-fetch for the surfaces that follow the same list/get shape. */
