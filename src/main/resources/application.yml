@@ -1,0 +1,35 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: toolgate
+
+logging:
+  level:
+    toolgate.audit: INFO
+    dev.mahadi.toolgate: INFO
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+# ---------------------------------------------------------------------------
+# Policy. Deny by default: a tool absent from `allow` is never shown to the model.
+#
+# Server ids must not contain underscores — tool names are namespaced as
+# `serverId__toolName` and the split is on the first occurrence.
+# ---------------------------------------------------------------------------
+toolgate:
+  block-threshold: 50
+  approve-first-sighting: false
+  servers:
+    files:
+      url: http://localhost:9001
+      allow:
+        - read_file
+        - write_file
+      require-approval:
+        - write_file
