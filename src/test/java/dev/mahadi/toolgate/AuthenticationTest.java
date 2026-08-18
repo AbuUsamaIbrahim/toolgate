@@ -58,6 +58,8 @@ class AuthenticationTest {
         registry.add("toolgate.auth.callers.agent-one.scopes[0]", () -> "tools:read");
         registry.add("toolgate.auth.callers.agent-one.scopes[1]", () -> "tools:call");
 
+        // The operator API has its own credential; these tests exercise the agent path.
+        registry.add("toolgate.operator.enabled", () -> "false");
         registry.add("toolgate.servers.files.url", upstream::url);
         registry.add("toolgate.servers.files.allow[0]", () -> "read_file");
     }

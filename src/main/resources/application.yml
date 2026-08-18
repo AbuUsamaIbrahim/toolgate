@@ -44,6 +44,33 @@ toolgate:
           - tools:call
 
   # -------------------------------------------------------------------------
+  # Operator API (/toolgate/**). This is the API that approves blocked calls and
+  # re-pins changed definitions — anyone holding this credential can turn off
+  # every control the gateway has, so it gets its own token rather than sharing
+  # the agent's.
+  #
+  # Enabled but with no token set means no access, not open access. Getting that
+  # backwards is how the most powerful API in a system ends up unauthenticated
+  # because somebody forgot a line of config.
+  # -------------------------------------------------------------------------
+  operator:
+    enabled: true
+    loopback-only: true           # refuse operator calls from off-host
+    # printf '%s' "$TOKEN" | shasum -a 256
+    token-sha256: ""              # empty = operator API is closed
+
+  # -------------------------------------------------------------------------
+  # Notifications. A blocked call looks exactly like a broken one to whoever is
+  # using the agent, so an approval nobody is told about becomes an argument for
+  # switching the gateway off. Events are always logged; the webhook is delivery.
+  #
+  # Sent as {"text": "..."} — the shape Slack and most chat tools accept.
+  # Delivery is fire-and-forget: a dead webhook must never fail a tool call.
+  # -------------------------------------------------------------------------
+  notify:
+    webhook-url: ""
+
+  # -------------------------------------------------------------------------
   # Pin storage. This file is the gateway's trust store: it records which tool
   # definitions were approved. Without it, every restart re-pins everything and
   # the poisoning defence silently stops enforcing.

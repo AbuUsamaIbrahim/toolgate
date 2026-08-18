@@ -175,11 +175,9 @@ Worth stating plainly, because a security tool that oversells itself is worse th
 - **Approvals and the audit log are still in memory.** Pins now persist; these do not. A
   restart forgets outstanding approvals and the decision history. The audit trail in
   particular belongs on a durable append-only sink the gateway cannot rewrite.
-- **The operator API is unauthenticated.** It is on a separate path from `/mcp` so an agent
-  cannot reach it through the protocol, but anything that can reach the port can approve
-  its own calls. Bind it to localhost or put it behind your own auth until this is fixed.
-- **No notification when approval is needed.** A blocked call records a pending approval
-  that nobody is told about, so the agent simply fails until an operator goes looking.
+- **The operator credential is a bearer token in a config file.** It is separate from the
+  agent's token and defaults to loopback-only, but it is still a static shared secret. A
+  deployment with real identity infrastructure should front `/toolgate/**` with it.
 - **The bundled token validator is static.** It checks hashes from configuration, which
   suits a self-hosted gateway. A deployment with a real OAuth 2.1 authorization server
   should implement `TokenValidator` against JWT verification or token introspection — the
@@ -275,7 +273,48 @@ Point your agent at `POST /mcp`. Tools arrive namespaced as `files__read_file`.
 | `POST /toolgate/approvals/{id}/deny` | Refuse it |
 
 Operator routes are deliberately separate from `/mcp`: anything that can change policy must
-not be reachable through the door the agent uses.
+not be reachable through the door the agent uses. Separation is not sufficient on its own,
+though — on a developer machine the agent shares a host with the gateway, and nothing stops
+it opening a socket. So the operator API has its own credential:
+
+```yaml
+toolgate:
+  operator:
+    enabled: true
+    loopback-only: true
+    token-sha256: <printf '%s' "$TOKEN" | shasum -a 256>
+```
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" localhost:8080/toolgate/drift.txt
+```
+
+Two behaviours worth knowing:
+
+- **Enabled with no token configured means closed, not open.** Forgetting a line of config
+  must not silently expose the API that can approve anything.
+- **It is a filter, not a check inside each handler.** Per-handler guards leave the next
+  endpoint someone adds unprotected until they remember to add one, and "remember to" is
+  not an access control model.
+
+### Notifications
+
+A blocked call is indistinguishable from a broken one to whoever is using the agent. If
+nobody is told an approval is waiting, the agent just fails, and the gateway acquires a
+reputation for being the problem — which is how a working control gets switched off.
+
+Approval requests and drift detections are always logged, and posted to a webhook when one
+is configured:
+
+```yaml
+toolgate:
+  notify:
+    webhook-url: https://hooks.example.com/...
+```
+
+The body is `{"text": "..."}`, which Slack and most chat tools accept. Delivery is
+fire-and-forget with a five-second timeout: a slow or dead webhook must not add latency to
+a tool call, and must certainly not fail one.
 
 ## Tests
 

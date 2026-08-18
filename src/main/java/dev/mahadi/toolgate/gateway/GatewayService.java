@@ -5,6 +5,7 @@ import dev.mahadi.toolgate.audit.AuditLog;
 import dev.mahadi.toolgate.policy.PolicyEngine;
 import dev.mahadi.toolgate.policy.ToolPolicyProperties;
 import dev.mahadi.toolgate.protocol.Mcp;
+import dev.mahadi.toolgate.notify.Notifier;
 import dev.mahadi.toolgate.scanner.InjectionScanner;
 import dev.mahadi.toolgate.upstream.UpstreamClient;
 import org.slf4j.Logger;
@@ -48,17 +49,20 @@ public class GatewayService {
     private final InjectionScanner scanner;
     private final ApprovalStore approvals;
     private final AuditLog audit;
+    private final Notifier notifier;
     private final ObjectMapper mapper;
 
     public GatewayService(ToolPolicyProperties props, PolicyEngine policy,
                           UpstreamClient upstream, InjectionScanner scanner,
-                          ApprovalStore approvals, AuditLog audit, ObjectMapper mapper) {
+                          ApprovalStore approvals, AuditLog audit,
+                          Notifier notifier, ObjectMapper mapper) {
         this.props = props;
         this.policy = policy;
         this.upstream = upstream;
         this.scanner = scanner;
         this.approvals = approvals;
         this.audit = audit;
+        this.notifier = notifier;
         this.mapper = mapper;
     }
 
@@ -135,8 +139,15 @@ public class GatewayService {
                             AuditLog.Outcome.ALLOWED, a.reason(), List.of());
                     allowed.add(namespaced(serverId, tool));
                 }
-                case PolicyEngine.Decision.Deny d -> audit.record(caller, serverId, tool.name(),
-                        "advertise", AuditLog.Outcome.DENIED, d.reason(), d.evidence());
+                case PolicyEngine.Decision.Deny d -> {
+                    audit.record(caller, serverId, tool.name(), "advertise",
+                            AuditLog.Outcome.DENIED, d.reason(), d.evidence());
+                    if (d.reason().contains("changed since it was pinned")) {
+                        notifier.notify(Notifier.Kind.DRIFT_DETECTED,
+                                "%s/%s was withheld from the agent".formatted(serverId, tool.name()),
+                                "Review: GET /toolgate/drift.txt");
+                    }
+                }
                 case PolicyEngine.Decision.NeedsApproval n -> {
                     // Withheld from the model until a human says otherwise. Advertising it
                     // with a warning would not help: the model reads the description either way.
@@ -144,6 +155,9 @@ public class GatewayService {
                     audit.record(caller, serverId, tool.name(), "advertise",
                             AuditLog.Outcome.APPROVAL_REQUIRED, n.reason(),
                             List.of("approvalId=" + p.id()));
+                    notifier.notify(Notifier.Kind.APPROVAL_REQUIRED,
+                            "%s/%s is waiting for approval".formatted(serverId, tool.name()),
+                            n.reason() + " — approve: POST /toolgate/approvals/" + p.id() + "/approve");
                 }
             }
         }
@@ -187,6 +201,9 @@ public class GatewayService {
                 audit.record(caller, serverId, toolName, "tools/call",
                         AuditLog.Outcome.APPROVAL_REQUIRED, n.reason(),
                         List.of("approvalId=" + p.id()));
+                notifier.notify(Notifier.Kind.APPROVAL_REQUIRED,
+                        "%s wants to call %s/%s".formatted(caller, serverId, toolName),
+                        n.reason() + " — approve: POST /toolgate/approvals/" + p.id() + "/approve");
                 return Mono.just(Mcp.Response.error(request.id(), Mcp.Codes.APPROVAL_REQUIRED,
                         "human approval required: " + n.reason(),
                         Map.of("approvalId", p.id())));
