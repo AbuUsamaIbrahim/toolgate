@@ -130,6 +130,77 @@ public final class ResourceGuard {
         return evidence;
     }
 
+    /**
+     * Checks whether a URI template can be permitted at all.
+     *
+     * <h2>Why a template needs its own check</h2>
+     * A template is expanded <em>by the client</em>. The gateway advertises
+     * {@code file:///{path}}, the model picks a value, and the first the gateway hears of
+     * the result is a {@code resources/read} for a URI it never offered. So the allowlist
+     * has to be evaluated against every expansion the template could produce, before the
+     * template is advertised — because afterwards it is too late to have an opinion about
+     * which one was chosen.
+     *
+     * <p>The test is literal-prefix containment: everything before the first {@code &#123;}
+     * is fixed, everything after it is attacker-influenced. {@code file:///&#123;path&#125;}
+     * against an allowlist of {@code file:///project/*} has a fixed part of
+     * {@code file:///}, which is shorter than the rule, so an expansion can escape it —
+     * refused. {@code file:///project/&#123;name&#125;} has a fixed part that already
+     * satisfies the rule, so no expansion can leave the permitted subtree by prefix alone.
+     *
+     * <p>"By prefix alone" is doing work in that sentence. A variable expanding to
+     * {@code ../../etc/shadow} escapes a prefix that looks perfectly safe, which is why
+     * this is only half the control: {@link #checkUri} still runs on the expanded URI at
+     * read time, and it is the half that catches traversal.
+     */
+    public static Verdict checkTemplate(String uriTemplate, Set<String> resourceRules,
+                                        Set<String> allowedSchemes) {
+        if (uriTemplate == null || uriTemplate.isBlank()) {
+            return Verdict.refuse("template has no URI", List.of());
+        }
+
+        int firstVar = uriTemplate.indexOf('{');
+        String fixed = firstVar < 0 ? uriTemplate : uriTemplate.substring(0, firstVar);
+
+        // The scheme is part of the fixed portion, so it can be judged now.
+        var schemeVerdict = checkUri(fixed.isBlank() ? uriTemplate : fixed + "x", allowedSchemes);
+        if (!schemeVerdict.allowed()) {
+            return schemeVerdict;
+        }
+
+        if (firstVar < 0) {
+            // No variables: it is really just a resource, and the ordinary rules apply.
+            return matchesAnyRule(uriTemplate, resourceRules)
+                    ? Verdict.ok()
+                    : Verdict.refuse("template is not covered by the resource allowlist",
+                            List.of("template=" + abbreviate(uriTemplate)));
+        }
+
+        for (String rule : resourceRules) {
+            String required = rule.endsWith("*") ? rule.substring(0, rule.length() - 1) : rule;
+            // The fixed part must already be inside the permitted subtree. If the rule is
+            // longer than the fixed part, expansion decides whether it matches — and
+            // expansion is the attacker's move.
+            if (fixed.startsWith(required)) return Verdict.ok();
+        }
+
+        return Verdict.refuse(
+                "template could expand outside the resource allowlist — everything after "
+                        + "'%s' is chosen by the client".formatted(fixed),
+                List.of("template=" + abbreviate(uriTemplate)));
+    }
+
+    private static boolean matchesAnyRule(String value, Set<String> rules) {
+        for (String rule : rules) {
+            if (rule.endsWith("*")) {
+                if (value.startsWith(rule.substring(0, rule.length() - 1))) return true;
+            } else if (rule.equals(value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static String abbreviate(String s) {
         return s.length() <= 120 ? s : s.substring(0, 120) + "…";
     }

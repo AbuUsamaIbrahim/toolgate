@@ -168,6 +168,15 @@ public record PolicyBundle(
         return false;
     }
 
+    /** Union of the base rules and any the caller's teams add. */
+    public java.util.Set<String> resourceRules(String serverId, java.util.Set<String> teams) {
+        java.util.Set<String> rules = new java.util.LinkedHashSet<>();
+        ServerPolicy base = servers == null ? null : servers.get(serverId);
+        if (base != null) rules.addAll(base.allowResources());
+        forTeams(serverId, teams).forEach(p -> rules.addAll(p.allowResources()));
+        return rules;
+    }
+
     /** Union across the base policy and the caller's teams. */
     public java.util.Set<String> allowedUriSchemes(String serverId, java.util.Set<String> teams) {
         java.util.Set<String> schemes = new java.util.LinkedHashSet<>();

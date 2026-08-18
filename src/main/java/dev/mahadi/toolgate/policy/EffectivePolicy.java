@@ -86,6 +86,16 @@ public class EffectivePolicy {
                 .orElseGet(() -> local.allowedUriSchemes(serverId));
     }
 
+    /**
+     * The resource rules themselves, for checks that reason about the rule set rather than
+     * testing one value against it — template containment being the only one so far.
+     */
+    public java.util.Set<String> resourceRules(java.util.Set<String> teams, String serverId) {
+        return bundle()
+                .map(b -> b.resourceRules(serverId, teams))
+                .orElseGet(() -> local.resourceRules(serverId));
+    }
+
     public int blockThreshold() {
         return bundle().map(PolicyBundle::blockThreshold).orElseGet(local::getBlockThreshold);
     }

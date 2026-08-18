@@ -215,6 +215,29 @@ hash identically and a pin for one would satisfy the other. It is absent from th
 fingerprint deliberately — adding it would change every hash already written to a pin file
 or published in a bundle's reviewed list, turning a tidy-up into a fleet-wide re-approval.
 
+### Templates are checked before they exist
+
+`resources/templates/list` offers parameterised resources like `file:///{path}`, and the
+client expands them. That inverts the usual order: the gateway never sees the expansion
+happen, so the allowlist has to be enforced against every URI a template *could* produce,
+at the moment it is advertised. Afterwards there is nothing left to decide.
+
+The test is literal-prefix containment. Everything before the first `{` is fixed;
+everything after it is chosen by the client.
+
+| Template | Against `file:///project/*` | |
+|---|---|---|
+| `file:///project/{name}` | permitted | fixed part is already inside the subtree |
+| `file:///{path}` | refused | expands to anything; the allowlist would be decorative |
+| `file:///etc/{name}` | refused | rooted somewhere else entirely |
+
+Supporting templates necessarily **softens the "never advertised" rule** — an expansion was
+never advertised and never could be. So a read now resolves an exact advertisement first,
+then an approved template, longest prefix winning. That makes the remaining checks load
+bearing rather than belt-and-braces: containment is only half the control, because a
+variable expanding to `../../etc/shadow` escapes a prefix that looks perfectly safe. The
+traversal check on the expanded URI at read time is the other half.
+
 ### Reads are routed, not forwarded
 
 Tool names are namespaced on the way out, so a call carries its own routing. A resource is

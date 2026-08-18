@@ -307,6 +307,44 @@ public class PolicyEngine {
     }
 
     /**
+     * Evaluates a resource template at advertisement time.
+     *
+     * <p>Templates are the one surface where the allowlist has to be enforced <em>before</em>
+     * the thing it governs exists. The client expands the template and the gateway sees only
+     * the result, so a template that could expand outside the permitted subtree has to be
+     * refused up front — afterwards there is nothing left to decide.
+     */
+    public Decision evaluateTemplate(AccessToken caller, String serverId,
+                                     Mcp.ResourceTemplate template) {
+        if (props.failedClosed()) {
+            return new Decision.Deny(props.failureReason(),
+                    List.of("%s %s".formatted(serverId, template.uriTemplate())));
+        }
+
+        var verdict = ResourceGuard.checkTemplate(template.uriTemplate(),
+                props.resourceRules(caller.teams(), serverId),
+                props.allowedUriSchemes(caller.teams(), serverId));
+        if (!verdict.allowed()) {
+            return new Decision.Deny(verdict.reason(), verdict.evidence());
+        }
+
+        var scan = scanner.scan(template.name(), template.title(), template.description());
+        if (!scan.clean()) {
+            List<String> evidence = new ArrayList<>();
+            scan.findings().forEach(f ->
+                    evidence.add("%s in %s: %s".formatted(f.rule(), f.field(), f.evidence())));
+            if (scan.score() >= props.blockThreshold()) {
+                return new Decision.Deny(
+                        "template metadata contains adversarial content (score %d)"
+                                .formatted(scan.score()), List.copyOf(evidence));
+            }
+            return new Decision.NeedsApproval(
+                    "template metadata is suspicious (score %d): %s".formatted(scan.score(), evidence));
+        }
+        return new Decision.Allow("template cannot expand outside the allowlist");
+    }
+
+    /**
      * Re-checks a resource URI at read time, without the metadata.
      *
      * <p>Separate from {@link #evaluateResource} because a read has only the URI to go on —

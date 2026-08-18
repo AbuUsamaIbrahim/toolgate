@@ -82,6 +82,7 @@ public class GatewayService {
             case Mcp.METHOD_TOOLS_CALL -> toolsCall(caller, request);
             case Mcp.METHOD_RESOURCES_LIST -> resourcesList(caller, request);
             case Mcp.METHOD_RESOURCES_READ -> resourcesRead(caller, request);
+            case Mcp.METHOD_RESOURCE_TEMPLATES_LIST -> templatesList(caller, request);
             case Mcp.METHOD_PROMPTS_LIST -> promptsList(caller, request);
             case Mcp.METHOD_PROMPTS_GET -> promptsGet(caller, request);
             case null -> Mono.just(Mcp.Response.error(request.id(),
@@ -198,13 +199,18 @@ public class GatewayService {
         Object uriParam = request.params() == null ? null : request.params().get("uri");
         String uri = uriParam == null ? null : String.valueOf(uriParam);
 
+        // Resolves an exact advertisement first, then an approved template. A template
+        // expansion was never advertised and never could be, so supporting templates means
+        // this gate necessarily softens — which is why the allowlist and the traversal
+        // check below are not optional. They are what remains.
         var owner = router.ownerOf(uri);
         if (owner.isEmpty()) {
             audit.record(caller.subject(), "-", String.valueOf(uri), "resources/read",
                     AuditLog.Outcome.DENIED,
-                    "resource was never advertised through this gateway", List.of());
+                    "resource was neither advertised nor covered by an approved template",
+                    List.of());
             return Mono.just(Mcp.Response.error(request.id(), Mcp.Codes.POLICY_DENIED,
-                    "resource was never advertised through this gateway", null));
+                    "resource was neither advertised nor covered by an approved template", null));
         }
         String serverId = owner.get();
 
@@ -266,6 +272,53 @@ public class GatewayService {
         audit.record(caller.subject(), serverId, uri, "resources/read",
                 AuditLog.Outcome.ALLOWED, "content screened", List.of());
         return response;
+    }
+
+    /** Aggregates resource templates, refusing any that could expand out of bounds. */
+    private Mono<Mcp.Response> templatesList(AccessToken caller, Mcp.Request request) {
+        return Flux.fromIterable(props.serverIds())
+                .flatMap(serverId -> fetchList(serverId, Mcp.METHOD_RESOURCE_TEMPLATES_LIST,
+                        Mcp.ResourceTemplatesListResult.class,
+                        Mcp.ResourceTemplatesListResult::resourceTemplates)
+                        .map(list -> screenTemplates(caller, serverId, list))
+                        .onErrorResume(e -> upstreamFailed(caller, serverId,
+                                "resources/templates/list", e, List.<Mcp.ResourceTemplate>of())))
+                .collectList()
+                .map(lists -> {
+                    List<Mcp.ResourceTemplate> all = new ArrayList<>();
+                    lists.forEach(all::addAll);
+                    return Mcp.Response.ok(request.id(),
+                            new Mcp.ResourceTemplatesListResult("complete", all, null, null, null));
+                });
+    }
+
+    private List<Mcp.ResourceTemplate> screenTemplates(AccessToken caller, String serverId,
+                                                       List<Mcp.ResourceTemplate> templates) {
+        List<Mcp.ResourceTemplate> allowed = new ArrayList<>();
+        java.util.Set<String> advertised = new java.util.LinkedHashSet<>();
+
+        for (Mcp.ResourceTemplate template : templates) {
+            var decision = policy.evaluateTemplate(caller, serverId, template);
+            switch (decision) {
+                case PolicyEngine.Decision.Allow a -> {
+                    audit.record(caller.subject(), serverId, template.uriTemplate(),
+                            "advertise template", AuditLog.Outcome.ALLOWED, a.reason(), List.of());
+                    allowed.add(template);
+                    router.templateAdvertised(serverId, template.uriTemplate());
+                    int firstVar = template.uriTemplate().indexOf('{');
+                    advertised.add(firstVar < 0 ? template.uriTemplate()
+                            : template.uriTemplate().substring(0, firstVar));
+                }
+                case PolicyEngine.Decision.Deny d -> audit.record(caller.subject(), serverId,
+                        template.uriTemplate(), "advertise template", AuditLog.Outcome.DENIED,
+                        d.reason(), d.evidence());
+                case PolicyEngine.Decision.NeedsApproval n -> audit.record(caller.subject(),
+                        serverId, template.uriTemplate(), "advertise template",
+                        AuditLog.Outcome.APPROVAL_REQUIRED, n.reason(), List.of());
+            }
+        }
+        router.retainOnlyTemplates(serverId, advertised);
+        return allowed;
     }
 
     /** Aggregates prompts from every upstream, applying policy to each. */

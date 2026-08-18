@@ -128,6 +128,11 @@ public class ToolPolicyProperties {
         return server != null && server.getAllowPrompts().contains(name);
     }
 
+    public Set<String> resourceRules(String serverId) {
+        Server server = servers.get(serverId);
+        return server == null ? Set.of() : server.getAllowResources();
+    }
+
     public Set<String> allowedUriSchemes(String serverId) {
         Server server = servers.get(serverId);
         return server == null ? Set.of() : server.getAllowedUriSchemes();
