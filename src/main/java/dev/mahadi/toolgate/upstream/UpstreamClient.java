@@ -33,6 +33,23 @@ public class UpstreamClient {
     private final ObjectMapper mapper;
     private final Map<String, UpstreamTransport> transports = new ConcurrentHashMap<>();
 
+    /**
+     * Notified when an upstream speaks unprompted.
+     *
+     * <p>Only stdio upstreams can do this today. Streamable HTTP carries server-initiated
+     * messages over SSE, which this gateway does not implement — stated in the README
+     * rather than left to be discovered, because "notifications silently never arrive" is
+     * a bad thing to find out during an incident.
+     */
+    private volatile java.util.function.BiConsumer<String, Mcp.Request> notificationListener;
+
+    public void onNotification(java.util.function.BiConsumer<String, Mcp.Request> listener) {
+        this.notificationListener = listener;
+        transports.forEach((id, t) -> {
+            if (t instanceof StdioUpstream stdio) stdio.onNotification(listener);
+        });
+    }
+
     public UpstreamClient(ToolPolicyProperties props, WebClient.Builder builder, ObjectMapper mapper) {
         this.props = props;
         this.builder = builder;
@@ -73,7 +90,12 @@ public class UpstreamClient {
             }
             if (hasCommand) {
                 try {
-                    return new StdioUpstream(id, server.getCommand(), server.getEnv(), mapper);
+                    StdioUpstream stdio = new StdioUpstream(id, server.getCommand(),
+                            server.getEnv(), mapper);
+                    // Upstreams are created lazily, so a listener registered before this
+                    // one existed still has to reach it.
+                    if (notificationListener != null) stdio.onNotification(notificationListener);
+                    return stdio;
                 } catch (IOException e) {
                     throw new IllegalStateException("failed to launch upstream '" + id + "'", e);
                 }

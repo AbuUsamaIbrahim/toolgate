@@ -52,6 +52,12 @@ public class StdioUpstream implements UpstreamTransport {
     private final BufferedWriter stdin;
     private final Map<String, Sinks.One<Mcp.Response>> pending = new ConcurrentHashMap<>();
 
+    /**
+     * Where unsolicited messages go. Set by {@link UpstreamClient}; null means nobody is
+     * listening, in which case they are dropped exactly as before.
+     */
+    private volatile java.util.function.BiConsumer<String, Mcp.Request> notificationListener;
+
     public StdioUpstream(String serverId, List<String> command, Map<String, String> env,
                          ObjectMapper mapper) throws IOException {
         this.serverId = serverId;
@@ -94,12 +100,31 @@ public class StdioUpstream implements UpstreamTransport {
         });
     }
 
+    public void onNotification(java.util.function.BiConsumer<String, Mcp.Request> listener) {
+        this.notificationListener = listener;
+    }
+
+    private void notifyListener(String line) {
+        var listener = notificationListener;
+        if (listener == null) {
+            log.debug("stdio upstream {} notification with nobody listening: {}", serverId, line);
+            return;
+        }
+        try {
+            listener.accept(serverId, mapper.readValue(line, Mcp.Request.class));
+        } catch (Exception e) {
+            log.warn("stdio upstream {} sent an unreadable notification: {}", serverId, e.toString());
+        }
+    }
+
     private void dispatch(String line) {
         try {
             Mcp.Response response = mapper.readValue(line, Mcp.Response.class);
             if (response.id() == null) {
-                // A notification. Nothing correlates to it, so there is nobody to hand it to.
-                log.debug("stdio upstream {} notification: {}", serverId, line);
+                // No id, so it correlates to nothing: the upstream is speaking unprompted.
+                // Handed to the listener rather than dropped, which is what makes
+                // server-initiated messages governable at all.
+                notifyListener(line);
                 return;
             }
             Sinks.One<Mcp.Response> sink = pending.remove(String.valueOf(response.id()));

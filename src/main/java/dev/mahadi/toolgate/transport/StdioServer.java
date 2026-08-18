@@ -53,12 +53,41 @@ public class StdioServer implements ApplicationRunner {
     private final GatewayService gateway;
     private final ObjectMapper mapper;
     private final ConfigurableApplicationContext context;
+    private final dev.mahadi.toolgate.upstream.UpstreamClient upstream;
+    private final dev.mahadi.toolgate.gateway.NotificationGate gate;
 
     public StdioServer(GatewayService gateway, ObjectMapper mapper,
-                       ConfigurableApplicationContext context) {
+                       ConfigurableApplicationContext context,
+                       dev.mahadi.toolgate.upstream.UpstreamClient upstream,
+                       dev.mahadi.toolgate.gateway.NotificationGate gate) {
         this.gateway = gateway;
         this.mapper = mapper;
         this.context = context;
+        this.upstream = upstream;
+        this.gate = gate;
+    }
+
+    /**
+     * Forwards approved server-initiated notifications to the client.
+     *
+     * <p>Only stdio can do this. The HTTP endpoint is request/response, so a notification
+     * arriving while an agent is connected over HTTP has nowhere to go — see the README.
+     * Writes are synchronised with the response path, because a notification arriving
+     * mid-response would otherwise interleave two JSON documents on one line and break
+     * framing for everything after it.
+     */
+    private void forwardNotification(BufferedWriter out, String serverId, Mcp.Request notification) {
+        if (!gate.permit(serverId, notification)) return;
+        try {
+            synchronized (out) {
+                out.write(mapper.writeValueAsString(notification));
+                out.write('\n');
+                out.flush();
+            }
+        } catch (Exception e) {
+            log.warn("failed forwarding {} from {}: {}",
+                    notification.method(), serverId, e.toString());
+        }
     }
 
     @Override
@@ -73,6 +102,10 @@ public class StdioServer implements ApplicationRunner {
                      new InputStreamReader(System.in, StandardCharsets.UTF_8));
              BufferedWriter out = new BufferedWriter(
                      new OutputStreamWriter(protocolOut, StandardCharsets.UTF_8))) {
+
+            // Only now is there somewhere to write, so this is where the listener goes.
+            upstream.onNotification((serverId, notification) ->
+                    forwardNotification(out, serverId, notification));
 
             log.info("toolgate listening on stdio");
 
@@ -141,9 +174,15 @@ public class StdioServer implements ApplicationRunner {
         try {
             // One compact line. An embedded newline anywhere here would split one message
             // into two unparseable halves.
-            out.write(mapper.writeValueAsString(response));
-            out.write('\n');
-            out.flush();
+            //
+            // Synchronised on the same writer the notification path uses: a notification
+            // arriving mid-response would otherwise interleave two JSON documents on one
+            // line and break framing for every message after it.
+            synchronized (out) {
+                out.write(mapper.writeValueAsString(response));
+                out.write('\n');
+                out.flush();
+            }
         } catch (Exception e) {
             log.error("failed writing response: {}", e.toString());
         }

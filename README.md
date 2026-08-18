@@ -101,6 +101,7 @@ Toolgate is the missing mechanism.
 | **Slack approvals** | A human gate that the requester can wave through themselves, granted by nobody in particular. |
 | **Header-mirror confinement** | `x-mcp-header` letting a tool definition write arbitrary HTTP headers. |
 | **Resource & prompt governance** | Two model-visible surfaces that were entirely ungoverned, and a wall that forced bypass. |
+| **Notification gate** | The upstream speaking unprompted — to announce changes to things nobody is watching, or in a loop. |
 
 ### Where the filtering happens
 
@@ -253,6 +254,51 @@ policy as well, since a listing is not a capability and policy may have changed 
 Prompts get the same treatment and arguably deserve stricter: a tool description has to
 persuade the model to act, whereas a prompt is already the thing the model was asked to
 follow.
+
+### Notifications: the upstream speaking unprompted
+
+Everything else here is a response to something the agent asked for. A notification is the
+only message where the server chooses both the timing and the frequency, which makes two
+things possible that requests do not.
+
+**Notifying about a resource nobody is watching.** `notifications/resources/updated` is
+defined to arrive on a subscription stream. One that arrives for a URI this gateway never
+advertised is either confused or probing, and forwarding it invites the client to read
+something that was never offered. One upstream announcing that *another's* resource changed
+is refused too — there is no legitimate reason for it, and honouring it would let a hostile
+server steer the client's reads toward a peer it does not control.
+
+**Flooding.** A `list_changed` makes a well-behaved client re-list; a `resources/updated`
+makes it re-read. A server emitting either in a loop turns the agent into a machine for
+burning context and tokens on its behalf — a denial of wallet with no exploit in it, just
+enthusiasm. Limits are per server *and* per kind, so a chatty resource cannot drown out a
+genuine `tools/list_changed` from the same upstream, and the drop is audited once per
+window rather than once per message.
+
+Anything the gateway does not recognise is dropped, matching how unknown requests are
+handled. A proxy that forwards messages it cannot evaluate is not a proxy, it is a pipe.
+
+Verified against a real subprocess that answers requests and then misbehaves — one
+legitimate update, one for `file:///etc/shadow`, one invented notification kind, and fifty
+`list_changed` in a burst:
+
+```
+  1 x  response to request id 1
+  1 x  notifications/resources/updated file:///project/readme.md
+ 20 x  notifications/tools/list_changed          ← 50 sent, 30 dropped
+
+  DENIED  chatty  file:///etc/shadow                update for a resource that was never advertised
+  DENIED  chatty  notifications/tools/list_changed  notification rate exceeded
+```
+
+**Only stdio carries notifications.** Streamable HTTP delivers server-initiated messages
+over SSE, which this gateway does not implement — so over HTTP they never arrive at all.
+That is stated here rather than left to be discovered, because "notifications silently
+never happen" is a bad thing to learn during an incident.
+
+Writes to the client are synchronised across the response and notification paths. A
+notification arriving mid-response would otherwise interleave two JSON documents on one
+line and break framing for every message after it.
 
 ## Authentication
 
