@@ -1079,6 +1079,15 @@ reaching the wrong caller, and a chatty upstream deadlocking because nobody drai
 stderr. There is also a check that a request is written as exactly one newline-terminated
 line — the constraint that a pretty-printer anywhere in the path would quietly break.
 
+## Status
+
+Pre-1.0, and **not independently reviewed** — the threat model, the controls and the tests
+that verify them were written by one person, which is a closed loop. Performance is
+unmeasured. Both are stated in [SECURITY.md](SECURITY.md) rather than left to be assumed.
+
+Releases are tagged; see [CHANGELOG.md](CHANGELOG.md). To report a vulnerability, see
+[SECURITY.md](SECURITY.md).
+
 ## Licence
 
-MIT.
+[MIT](LICENSE).

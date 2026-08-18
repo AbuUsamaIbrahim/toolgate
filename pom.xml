@@ -13,7 +13,7 @@
 
   <groupId>dev.mahadi</groupId>
   <artifactId>toolgate</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.1.0</version>
   <name>toolgate</name>
   <description>A security gateway for Model Context Protocol servers</description>
 
