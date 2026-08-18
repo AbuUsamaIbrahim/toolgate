@@ -1,0 +1,11 @@
+toolgate:
+  auth: { enabled: false, callers: {}, allowed-origins: [] }
+  operator: { enabled: false }
+  bundle: { source: "" }
+  pins: { file: demo/load/pins.json }
+  audit: { file: demo/load/audit.jsonl }
+  approvals: { file: demo/load/approvals.json }
+  servers:
+    fast:
+      url: http://127.0.0.1:9300
+      allow: [tool_000, tool_001, tool_002, tool_003, tool_004, tool_005, tool_006, tool_007, tool_008, tool_009, tool_010, tool_011, tool_012, tool_013, tool_014, tool_015, tool_016, tool_017, tool_018, tool_019, tool_020, tool_021, tool_022, tool_023, tool_024, tool_025, tool_026, tool_027, tool_028, tool_029, tool_030, tool_031, tool_032, tool_033, tool_034, tool_035, tool_036, tool_037, tool_038, tool_039, tool_040, tool_041, tool_042, tool_043, tool_044, tool_045, tool_046, tool_047, tool_048, tool_049, tool_050, tool_051, tool_052, tool_053, tool_054, tool_055, tool_056, tool_057, tool_058, tool_059, tool_060, tool_061, tool_062, tool_063, tool_064, tool_065, tool_066, tool_067, tool_068, tool_069, tool_070, tool_071, tool_072, tool_073, tool_074, tool_075, tool_076, tool_077, tool_078, tool_079, tool_080, tool_081, tool_082, tool_083, tool_084, tool_085, tool_086, tool_087, tool_088, tool_089, tool_090, tool_091, tool_092, tool_093, tool_094, tool_095, tool_096, tool_097, tool_098, tool_099, tool_100, tool_101, tool_102, tool_103, tool_104, tool_105, tool_106, tool_107, tool_108, tool_109, tool_110, tool_111, tool_112, tool_113, tool_114, tool_115, tool_116, tool_117, tool_118, tool_119, tool_120, tool_121, tool_122, tool_123, tool_124, tool_125, tool_126, tool_127, tool_128, tool_129, tool_130, tool_131, tool_132, tool_133, tool_134, tool_135, tool_136, tool_137, tool_138, tool_139, tool_140, tool_141, tool_142, tool_143, tool_144, tool_145, tool_146, tool_147, tool_148, tool_149, tool_150, tool_151, tool_152, tool_153, tool_154, tool_155, tool_156, tool_157, tool_158, tool_159, tool_160, tool_161, tool_162, tool_163, tool_164, tool_165, tool_166, tool_167, tool_168, tool_169, tool_170, tool_171, tool_172, tool_173, tool_174, tool_175, tool_176, tool_177, tool_178, tool_179, tool_180, tool_181, tool_182, tool_183, tool_184, tool_185, tool_186, tool_187, tool_188, tool_189, tool_190, tool_191, tool_192, tool_193, tool_194, tool_195, tool_196, tool_197, tool_198, tool_199]

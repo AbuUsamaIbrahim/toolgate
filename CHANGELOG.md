@@ -43,6 +43,10 @@ standard transports, in both directions.
 - Control plane for fleet coverage; Prometheus metrics and OTLP export.
 - Origin validation and header/body agreement on the HTTP binding.
 
+### Measured
+- `tools/call` adds 4.0ms at p50; `tools/list` over 50 tools adds 14.1ms. Screening is
+  sub-linear: ~6.4ms fixed plus ~0.066ms per tool. See `demo/load`.
+
 ### Known limitations
 See [Honest limitations](README.md#honest-limitations). The significant ones: binary
 resource content is not scanned, coverage is reported rather than enforced, revocation lags

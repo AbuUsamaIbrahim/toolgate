@@ -904,6 +904,8 @@ Worth stating plainly, because a security tool that oversells itself is worse th
 - **Revocation is bounded by token lifetime.** JWTs are validated offline against the JWKS,
   so a revoked session stays usable until it expires. Token introspection would close that
   at the cost of a network call per request; `TokenValidator` is the seam for it.
+- **Performance is measured narrowly.** Minutes rather than hours, localhost only, and
+  with no concurrent SSE subscriptions or database in the path.
 - **Coverage is reported, not enforced.** Check-ins show which gateways are running and
   which went quiet; they cannot show someone who never installed one, and they can be
   faked by anyone willing to lie about their own machine. Closing that needs managed client
@@ -1079,11 +1081,27 @@ reaching the wrong caller, and a chatty upstream deadlocking because nobody drai
 stderr. There is also a check that a request is written as exactly one newline-terminated
 line — the constraint that a pretty-printer anywhere in the path would quietly break.
 
+## What it costs
+
+It sits on the critical path of every tool call, so latency decides whether anyone keeps it
+installed. Measured against the same upstream with and without it in the path:
+
+| | added (p50) | added (p95) |
+|---|---|---|
+| `tools/call` — the common path | **4.0ms** | 8.5ms |
+| `tools/list` — 50 tools screened | 14.1ms | 26.5ms |
+
+Screening is sub-linear in tool count: roughly **6.4ms fixed** for being in the path, plus
+**0.066ms per tool** for a canonical fingerprint and a scan of every model-visible field.
+4ms on a call that does real I/O is noise; the listing costs more and happens once a
+session. Method, caveats and what was *not* measured: [`demo/load`](demo/load/).
+
 ## Status
 
 Pre-1.0, and **not independently reviewed** — the threat model, the controls and the tests
-that verify them were written by one person, which is a closed loop. Performance is
-unmeasured. Both are stated in [SECURITY.md](SECURITY.md) rather than left to be assumed.
+that verify them were written by one person, which is a closed loop. Performance is measured only
+in the narrow sense above — no sustained load, no concurrent subscriptions, no real
+network. Both are stated in [SECURITY.md](SECURITY.md) rather than left to be assumed.
 
 Releases are tagged; see [CHANGELOG.md](CHANGELOG.md). To report a vulnerability, see
 [SECURITY.md](SECURITY.md).
