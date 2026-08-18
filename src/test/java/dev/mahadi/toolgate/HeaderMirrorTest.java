@@ -40,7 +40,7 @@ class HeaderMirrorTest {
         props.setServers(new LinkedHashMap<>(Map.of(SERVER, server)));
 
         pins = new ToolPinStore(new InMemoryPinStorage());
-        policy = new PolicyEngine(props, pins, new InjectionScanner(), new DriftStore());
+        policy = new PolicyEngine(localPolicy(props), pins, new InjectionScanner(), new DriftStore());
     }
 
     /** A tool whose {@code path} parameter asks to be mirrored into {@code header}. */
@@ -211,5 +211,18 @@ class HeaderMirrorTest {
 
         assertThat(HeaderMirror.declaredBy(plain)).isEmpty();
         assertThat(HeaderMirror.validate(plain)).isEmpty();
+    }
+
+    /**
+     * These tests exercise policy itself, not its distribution, so they run with no signed
+     * bundle — local configuration is authoritative, exactly as it is for a single
+     * developer running the gateway on their own machine.
+     */
+    static dev.mahadi.toolgate.policy.EffectivePolicy localPolicy(ToolPolicyProperties props) {
+        return new dev.mahadi.toolgate.policy.EffectivePolicy(
+                props,
+                new dev.mahadi.toolgate.bundle.BundleStore(
+                        new dev.mahadi.toolgate.bundle.BundleProperties(),
+                        new com.fasterxml.jackson.databind.ObjectMapper()));
     }
 }

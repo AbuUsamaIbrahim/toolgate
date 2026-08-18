@@ -94,6 +94,7 @@ Toolgate is the missing mechanism.
 | **Durable pins** | The trust store evaporating on restart and silently re-approving everything. |
 | **Drift diff** | An alert an operator has no way to evaluate. Shows exactly which field changed. |
 | **Durable audit trail** | The record of what happened evaporating on the restart that follows the incident. |
+| **Signed policy bundles** | Policy that lives in a file on each developer's laptop, editable by that developer. |
 | **Header-mirror confinement** | `x-mcp-header` letting a tool definition write arbitrary HTTP headers. |
 
 ### Where the filtering happens
@@ -273,6 +274,88 @@ legally equivalent to "did not happen", and wrong where the gateway is what stan
 an agent and a poisoned tool — there it disables the protection in order to protect the
 paperwork.
 
+## Running a fleet
+
+One developer running this locally needs none of the below. A company where two hundred
+developers point agents at MCP servers needs all of it, because at that scale the design
+has three new problems: policy has to *reach* every machine, decisions have to be
+attributable to a *person*, and trust has to be *curated once* rather than rediscovered
+independently on every laptop.
+
+### Signed policy bundles
+
+A bundle is one signed artifact carrying the allowlist, approval rules, scanner threshold
+and the tool fingerprints a reviewer has actually looked at.
+
+```bash
+java -jar toolgate.jar bundle keygen                                    # once
+java -jar toolgate.jar bundle sign policy.json signing.key prod-2026 bundle.json
+java -jar toolgate.jar bundle verify bundle.json prod-2026 "$PUBLIC_KEY"
+```
+
+Publish `bundle.json` anywhere the fleet can read it — an S3 object, an internal HTTP path,
+a file dropped by configuration management. There is no server to run.
+
+```yaml
+toolgate:
+  bundle:
+    source: https://internal.example.com/toolgate/bundle.json
+    required: true
+    public-keys:
+      prod-2026: MCowBQYDK2VwAyEA...
+```
+
+**When a bundle is in force it is authoritative, and local configuration is not merged with
+it.** Local YAML keeps only *connectivity* — the URL or command for each server, and its
+credential. The bundle decides what may be done once connected. Merging the two would let a
+developer widen their own allowlist by editing a file on their own laptop, which is central
+policy in appearance only. The corollary is that a server the local file can reach but the
+bundle has never heard of is allowed nothing at all.
+
+### Reviewed fingerprints, instead of trusting whatever arrived first
+
+Trust on first use has one real weakness, and at fleet scale it gets worse: two hundred
+laptops each independently trust whatever definition they happened to see first, and nobody
+has read any of them.
+
+A bundle can carry fingerprints a named person approved on a named date:
+
+```json
+"reviewedTools": [
+  { "serverId": "files", "toolName": "read_file",
+    "fingerprint": "9f2c...", "reviewedBy": "security@example.com",
+    "reviewedAt": "2026-08-01T00:00:00Z", "note": "read-only, no side effects" }
+]
+```
+
+A reviewed fingerprint **outranks** anything the local gateway has pinned — the whole point
+of reviewing once is that the judgement binds every machine, including those that already
+pinned something else. `requireReviewed: true` goes further and refuses any tool nobody has
+looked at.
+
+### What the distribution layer has to get right
+
+Signing is the easy part. These are the states a real fleet actually spends its time in:
+
+| Situation | Behaviour | Why |
+|---|---|---|
+| Source unreachable | Keep enforcing the bundle already in force | Otherwise an outage at the publisher is a fleet-wide disarm — a better attack than anything against the gateway |
+| Bundle at source is corrupt or badly signed | Loud rejection, keep the good one | A bad publish must not be able to unload a good policy |
+| An older, validly signed bundle is served | Refused | A signature proves authenticity, not freshness. Without a sequence floor, replaying yesterday's bundle restores the tool you removed today |
+| Restart while that replay is happening | Still refused | The floor is read from the local cache *before* the network, so a restart cannot clear it |
+| Restart while offline | Cached bundle re-verified and used | A laptop on a plane should still enforce |
+| Past expiry, inside `stale-grace` | Enforce, and complain | Offline for a week is normal |
+| Past `stale-grace` | Deny everything | Offline for a quarter should not still be enforcing last quarter's rules |
+| `required: true`, nothing loadable | Refuse to start | A gateway that looks healthy and enforces nothing is worse than one that is visibly down |
+
+The cache is re-verified on load exactly like a fresh download. It lives on the machine
+being defended, so it is a convenience, never a trust boundary.
+
+Key rotation works by publishing bundles signed with both the outgoing and incoming key and
+rolling `public-keys` through the fleet. One valid signature is enough — requiring all of
+them would mean a single retired key takes everything down, which turns rotation into an
+outage and therefore into something nobody does.
+
 ## Honest limitations
 
 Worth stating plainly, because a security tool that oversells itself is worse than none:
@@ -289,6 +372,14 @@ Worth stating plainly, because a security tool that oversells itself is worse th
 - **The operator credential is a bearer token in a config file.** It is separate from the
   agent's token and defaults to loopback-only, but it is still a static shared secret. A
   deployment with real identity infrastructure should front `/toolgate/**` with it.
+- **Callers are identified by static token hashes.** Workable for one gateway, unworkable
+  for a fleet: you cannot edit a file per person, and an audit line reading `example-agent`
+  names nobody. OIDC against the company IdP is the next increment, and `TokenValidator`
+  exists as an interface for exactly that.
+- **Nothing detects a developer who simply bypasses the gateway.** Deleting one line of
+  MCP client configuration reaches the servers directly. Coverage requires either managed
+  client configuration or a control plane that knows which machines have checked in — the
+  bundle mechanism above is the half of that problem that needs no server.
 - **The bundled token validator is static.** It checks hashes from configuration, which
   suits a self-hosted gateway. A deployment with a real OAuth 2.1 authorization server
   should implement `TokenValidator` against JWT verification or token introspection — the

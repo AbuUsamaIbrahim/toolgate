@@ -12,6 +12,9 @@ toolgate:
     file: target/test-state/audit.jsonl
   approvals:
     file: target/test-state/approvals.json
+  bundle:
+    source: ""
+    cache-file: target/test-state/bundle.cache.json
   operator:
     enabled: false        # per-test where it is the subject; off for everything else
   auth:

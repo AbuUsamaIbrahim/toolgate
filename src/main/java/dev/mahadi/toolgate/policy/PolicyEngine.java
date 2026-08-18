@@ -1,6 +1,7 @@
 package dev.mahadi.toolgate.policy;
 
 import dev.mahadi.toolgate.integrity.DriftStore;
+import dev.mahadi.toolgate.integrity.ToolFingerprint;
 import dev.mahadi.toolgate.integrity.ToolPinStore;
 import dev.mahadi.toolgate.protocol.HeaderMirror;
 import dev.mahadi.toolgate.protocol.Mcp;
@@ -31,12 +32,12 @@ import java.util.List;
 @Component
 public class PolicyEngine {
 
-    private final ToolPolicyProperties props;
+    private final EffectivePolicy props;
     private final ToolPinStore pins;
     private final InjectionScanner scanner;
     private final DriftStore drifts;
 
-    public PolicyEngine(ToolPolicyProperties props, ToolPinStore pins,
+    public PolicyEngine(EffectivePolicy props, ToolPinStore pins,
                         InjectionScanner scanner, DriftStore drifts) {
         this.props = props;
         this.pins = pins;
@@ -63,6 +64,13 @@ public class PolicyEngine {
      * @param serverId which upstream advertised it; tool names are only unique per server
      */
     public Decision evaluateAdvertisement(String serverId, Mcp.Tool tool) {
+        // 0. No policy in force. A gateway that cannot say what is permitted must not
+        // guess; the alternative is enforcing whatever happens to be cached on the laptop.
+        if (props.failedClosed()) {
+            return new Decision.Deny(props.failureReason(),
+                    List.of("%s/%s".formatted(serverId, tool.name())));
+        }
+
         // 1. Allowlist — deny by default.
         if (!props.isAllowed(serverId, tool.name())) {
             return new Decision.Deny(
@@ -70,19 +78,52 @@ public class PolicyEngine {
                     List.of("%s/%s".formatted(serverId, tool.name())));
         }
 
-        // 2. Integrity.
-        var verdict = pins.check(serverId, tool);
-        if (verdict instanceof ToolPinStore.Verdict.Drifted d) {
-            // Keep both definitions so an operator can be shown what actually changed.
-            drifts.record(d.pin(), tool, d.actualFingerprint());
+        // 2. Integrity. Two sources of truth are possible here, and only one of them
+        // can win: a fingerprint a person reviewed centrally, or whatever this machine
+        // happened to see first. Review wins whenever it exists — the point of reviewing
+        // once is that the judgement binds every laptop, including the ones that already
+        // pinned something else.
+        boolean firstSighting;
+        var review = props.reviewed(serverId, tool.name());
+
+        if (review.isPresent()) {
+            String actual = ToolFingerprint.of(tool);
+            if (!actual.equals(review.get().fingerprint())) {
+                return new Decision.Deny(
+                        "tool does not match the centrally reviewed definition",
+                        List.of("reviewed=" + abbreviate(review.get().fingerprint()),
+                                "actual=" + abbreviate(actual),
+                                "reviewedBy=" + review.get().reviewedBy(),
+                                "reviewedAt=" + review.get().reviewedAt()));
+            }
+            // Bring the local pin into line so the two stores cannot drift apart and
+            // start disagreeing about the same tool. Trust on first use is skipped
+            // entirely: there is nothing left to guess about.
+            if (pins.get(serverId, tool.name())
+                    .filter(p -> p.fingerprint().equals(actual)).isEmpty()) {
+                pins.pin(serverId, tool);
+            }
+            firstSighting = false;
+
+        } else if (props.requireReviewed()) {
             return new Decision.Deny(
-                    "tool definition changed since it was pinned",
-                    List.of(
-                            "pinned=" + abbreviate(d.pin().fingerprint()),
-                            "actual=" + abbreviate(d.actualFingerprint()),
-                            "pinnedAt=" + d.pin().pinnedAt()));
+                    "no reviewed definition exists for this tool",
+                    List.of("%s/%s".formatted(serverId, tool.name())));
+
+        } else {
+            var verdict = pins.check(serverId, tool);
+            if (verdict instanceof ToolPinStore.Verdict.Drifted d) {
+                // Keep both definitions so an operator can be shown what actually changed.
+                drifts.record(d.pin(), tool, d.actualFingerprint());
+                return new Decision.Deny(
+                        "tool definition changed since it was pinned",
+                        List.of(
+                                "pinned=" + abbreviate(d.pin().fingerprint()),
+                                "actual=" + abbreviate(d.actualFingerprint()),
+                                "pinnedAt=" + d.pin().pinnedAt()));
+            }
+            firstSighting = verdict instanceof ToolPinStore.Verdict.FirstSighting;
         }
-        boolean firstSighting = verdict instanceof ToolPinStore.Verdict.FirstSighting;
 
         // 3. Header mirroring. Unlike everything else in a definition this is an
         // instruction to the transport rather than text for the model, so it is checked
@@ -103,7 +144,7 @@ public class PolicyEngine {
             scan.findings().forEach(f ->
                     evidence.add("%s in %s: %s".formatted(f.rule(), f.field(), f.evidence())));
 
-            if (scan.score() >= props.getBlockThreshold()) {
+            if (scan.score() >= props.blockThreshold()) {
                 return refuse(serverId, tool, firstSighting,
                         "tool metadata contains adversarial content (score %d)".formatted(scan.score()),
                         List.copyOf(evidence));
@@ -118,7 +159,7 @@ public class PolicyEngine {
         // A clean, allowlisted tool seen for the first time is still a change to the
         // agent's capability surface. Operators who want to review that set
         // approve-first-sighting; those who trust their supply chain do not.
-        if (firstSighting && props.isApproveFirstSighting()) {
+        if (firstSighting && props.approveFirstSighting()) {
             return new Decision.NeedsApproval("first sighting of this tool definition");
         }
 
@@ -133,6 +174,10 @@ public class PolicyEngine {
      * otherwise is trusting the caller to enforce its own restrictions.
      */
     public Decision evaluateCall(String serverId, String toolName) {
+        if (props.failedClosed()) {
+            return new Decision.Deny(props.failureReason(),
+                    List.of("%s/%s".formatted(serverId, toolName)));
+        }
         if (!props.isAllowed(serverId, toolName)) {
             return new Decision.Deny(
                     "tool not in allowlist",

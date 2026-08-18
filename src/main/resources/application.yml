@@ -108,6 +108,28 @@ toolgate:
   approvals:
     file: ~/.toolgate/approvals.json
 
+  # -------------------------------------------------------------------------
+  # Signed policy bundle. This is how one security team's decision reaches
+  # every laptop without anyone editing 200 config files.
+  #
+  # When a bundle is in force it is AUTHORITATIVE for policy: the allowlist,
+  # approval rules, threshold and reviewed fingerprints all come from it, and
+  # the settings below in this file are ignored. Local configuration keeps only
+  # connectivity — how to reach a server, never what may be done with it.
+  # A server this file can reach but the bundle does not mention gets nothing.
+  #
+  # Produce one with:
+  #   java -jar toolgate.jar bundle keygen
+  #   java -jar toolgate.jar bundle sign policy.json key prod-2026 bundle.json
+  # -------------------------------------------------------------------------
+  bundle:
+    source: ""                    # file path or http(s) URL; empty = local config only
+    required: false               # true on a managed fleet: no bundle, no service
+    refresh-interval: 5m
+    stale-grace: 24h              # enforce this long past expiry, then fail closed
+    cache-file: ~/.toolgate/bundle.cache.json
+    public-keys: {}               # keyid -> base64 X.509 Ed25519 key; more than one to rotate
+
   block-threshold: 50
   approve-first-sighting: false
   # Upstreams. None by default — configure your own. An upstream is reached either
