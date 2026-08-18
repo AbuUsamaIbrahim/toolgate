@@ -8,6 +8,7 @@ approved, scans their metadata and their output for injected instructions, and w
 every decision it made.
 
 Written against MCP revision **2026-07-28**. Java 21, Spring Boot, WebFlux.
+Speaks both standard transports: **stdio** and **Streamable HTTP**, in either direction.
 
 ---
 
@@ -116,9 +117,14 @@ Worth stating plainly, because a security tool that oversells itself is worse th
 - **Pattern matching loses on its own.** The injection scanner catches the unsophisticated
   majority. An attacker who knows the rules can phrase around them. It scores rather than
   blocks, and exists as defence in depth — not as an oracle.
-- **In-memory state.** Pins, approvals and the audit log do not survive a restart. Fine for
-  a reference implementation; production needs a durable, append-only sink the gateway
-  itself cannot rewrite.
+- **In-memory state.** Pins, approvals and the audit log do not survive a restart. This is
+  the most consequential gap: every restart re-pins every tool, so the poisoning defence
+  quietly degrades to nothing until something is seen twice. Durable storage is next.
+- **The operator API is unauthenticated.** It is on a separate path from `/mcp` so an agent
+  cannot reach it through the protocol, but anything that can reach the port can approve
+  its own calls. Bind it to localhost or put it behind your own auth until this is fixed.
+- **No notification when approval is needed.** A blocked call records a pending approval
+  that nobody is told about, so the agent simply fails until an operator goes looking.
 - **The bundled token validator is static.** It checks hashes from configuration, which
   suits a self-hosted gateway. A deployment with a real OAuth 2.1 authorization server
   should implement `TokenValidator` against JWT verification or token introspection — the
@@ -128,11 +134,47 @@ Worth stating plainly, because a security tool that oversells itself is worse th
 
 ## Running
 
+### With a desktop client (stdio)
+
+Most MCP servers and clients speak stdio: the client launches the server as a subprocess
+and talks newline-delimited JSON-RPC over its pipes. Point your client at toolgate instead
+of at the servers directly, and every tool it sees has been through policy.
+
+```bash
+mvn -q package -DskipTests        # produces target/toolgate-<version>.jar
+```
+
+```jsonc
+// claude_desktop_config.json — or any MCP client's equivalent
+{
+  "mcpServers": {
+    "toolgate": {
+      "command": "java",
+      "args": ["-jar", "/path/to/toolgate.jar",
+               "--spring.profiles.active=stdio",
+               "--spring.config.additional-location=file:/path/to/toolgate.yml"]
+    }
+  }
+}
+```
+
+Toolgate then launches the real MCP servers itself, per your config, and the client never
+talks to them directly.
+
+### As an HTTP service
+
 ```bash
 JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn spring-boot:run
 ```
 
-Configure upstreams in `application.yml`:
+Agents POST to `/mcp` with a bearer token. Suits shared or containerised deployments where
+several agents sit behind one policy.
+
+### Configuration
+
+An upstream is reached either by `command` (a stdio subprocess) or `url` (Streamable
+HTTP). Setting both is rejected at startup rather than silently resolved — guessing which
+one an operator meant is how a gateway ends up talking to something nobody intended.
 
 ```yaml
 toolgate:
@@ -140,13 +182,27 @@ toolgate:
   approve-first-sighting: false
   servers:
     files:                     # server ids must not contain underscores
-      url: http://localhost:9001
+      command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
       allow:                   # anything absent from this list is never advertised
         - read_file
         - write_file
       require-approval:        # allowlisted, but a human must say yes per call
         - write_file
+
+    internal:
+      url: http://localhost:9001
+      token: ${INTERNAL_TOKEN}  # the gateway's own credential, never the caller's
+      allow:
+        - query
 ```
+
+### Identity, by transport
+
+Over HTTP the caller presents a bearer token. Over stdio there is none, and there should
+not be: the client launched this process, so the trust boundary is the operating system's.
+Anyone who can spawn the subprocess already holds the privileges it runs with. Audit
+entries from that path are recorded as `local-stdio` so the trail stays honest about where
+the authority came from.
 
 Point your agent at `POST /mcp`. Tools arrive namespaced as `files__read_file`.
 
@@ -182,6 +238,12 @@ poisoned tool *output*, protocol-version rejection, and fingerprint canonicalisa
 Authentication is covered separately: missing and unrecognised tokens, insufficient scope,
 case-insensitive scheme handling, the metadata document, and a spoofed caller header being
 ignored in favour of the token subject.
+
+The stdio binding is tested against **real subprocesses**, because the failures it invites
+are all in the framing: a message split across lines, responses arriving out of order and
+reaching the wrong caller, and a chatty upstream deadlocking because nobody drained its
+stderr. There is also a check that a request is written as exactly one newline-terminated
+line — the constraint that a pretty-printer anywhere in the path would quietly break.
 
 ## Licence
 

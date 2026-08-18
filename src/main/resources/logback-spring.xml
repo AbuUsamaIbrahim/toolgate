@@ -1,0 +1,22 @@
+<configuration>
+  <springProfile name="stdio">
+    <!--
+      stdout is the MCP frame channel. Logging there would interleave log lines with
+      protocol messages and break the client's parser, so the console appender is
+      pinned to stderr for this profile.
+    -->
+    <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+      <target>System.err</target>
+      <encoder>
+        <pattern>%d{HH:mm:ss.SSS} %-5level %logger{24} - %msg%n</pattern>
+      </encoder>
+    </appender>
+    <root level="INFO">
+      <appender-ref ref="STDERR"/>
+    </root>
+  </springProfile>
+
+  <springProfile name="!stdio">
+    <include resource="org/springframework/boot/logging/logback/base.xml"/>
+  </springProfile>
+</configuration>

@@ -1,0 +1,16 @@
+# Profile for running as a stdio MCP server, launched by a desktop client.
+#
+# Everything here exists to keep stdout clean: it carries the protocol, and any
+# other byte written to it corrupts the stream.
+spring:
+  main:
+    web-application-type: none    # no HTTP listener in this mode
+    banner-mode: off              # the Spring banner would be the first protocol violation
+
+logging:
+  # Console output goes to stderr. The client may capture or ignore it, and the spec is
+  # explicit that stderr does not imply an error condition.
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level %logger{20} - %msg%n"
+  file:
+    name: ""

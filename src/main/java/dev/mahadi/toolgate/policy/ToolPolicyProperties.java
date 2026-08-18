@@ -33,8 +33,15 @@ public class ToolPolicyProperties {
     private boolean approveFirstSighting = false;
 
     public static class Server {
-        /** Base URL of the upstream MCP server. */
+        /** Base URL, for an upstream reached over Streamable HTTP. */
         private String url;
+        /**
+         * Command and arguments, for an upstream launched as a stdio subprocess.
+         * Mutually exclusive with {@link #url}.
+         */
+        private java.util.List<String> command;
+        /** Extra environment for a stdio upstream — typically its own API credentials. */
+        private Map<String, String> env = new LinkedHashMap<>();
         /** Tools this agent may see. Empty means none — the gateway denies by default. */
         private Set<String> allow = Set.of();
         /** Subset of {@link #allow} that additionally requires human approval to call. */
@@ -47,6 +54,10 @@ public class ToolPolicyProperties {
 
         public String getUrl() { return url; }
         public void setUrl(String url) { this.url = url; }
+        public java.util.List<String> getCommand() { return command; }
+        public void setCommand(java.util.List<String> command) { this.command = command; }
+        public Map<String, String> getEnv() { return env; }
+        public void setEnv(Map<String, String> env) { this.env = env; }
         public Set<String> getAllow() { return allow; }
         public void setAllow(Set<String> allow) { this.allow = allow; }
         public Set<String> getRequireApproval() { return requireApproval; }
