@@ -116,6 +116,30 @@ public class SubscriptionRegistry {
     }
 
     /**
+     * Records that one upstream ended its half of a subscription.
+     *
+     * @return true when that was the last one, so the client's subscription is now over
+     */
+    public boolean upstreamClosed(String clientId, String serverId) {
+        Subscription existing = byClientId.get(clientId);
+        if (existing == null) return false;
+
+        Map<String, String> remaining = new java.util.LinkedHashMap<>(existing.upstreamIds());
+        String closed = remaining.remove(serverId);
+        if (closed != null) upstreamToClient.remove(link(serverId, closed));
+
+        if (remaining.isEmpty()) {
+            byClientId.remove(clientId);
+            log.info("subscription {} closed: every upstream has ended", clientId);
+            return true;
+        }
+        // Still served by the others. A subscription spanning five servers should not end
+        // because one of them shut down cleanly.
+        byClientId.put(clientId, new Subscription(clientId, existing.granted(), remaining));
+        return false;
+    }
+
+    /**
      * Forgets everything for one upstream, for when it dies.
      *
      * <p>The client's subscription survives: the other upstreams are still serving it, and

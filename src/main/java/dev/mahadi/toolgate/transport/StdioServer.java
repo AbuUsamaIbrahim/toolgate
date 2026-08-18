@@ -140,6 +140,10 @@ public class StdioServer implements ApplicationRunner {
             upstream.onNotification((serverId, notification) ->
                     forwardNotification(out, serverId, notification));
 
+            // Graceful closure of a subscription arrives as a response to a request the
+            // client is still waiting on, so it needs the same channel.
+            gateway.onOutOfBandResponse(response -> write(out, response));
+
             log.info("toolgate listening on stdio");
 
             String line;

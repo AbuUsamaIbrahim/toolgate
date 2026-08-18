@@ -491,8 +491,11 @@ public class GatewayService {
             upstream.send(serverId, new Mcp.Request("2.0", upstreamId,
                             Mcp.METHOD_SUBSCRIPTIONS_LISTEN, params,
                             Map.of(Mcp.META_PROTOCOL_VERSION, Mcp.PROTOCOL_VERSION)))
-                    .subscribe(r -> { }, e -> log.debug("subscription to {} ended: {}",
-                            serverId, e.toString()));
+                    // A response to a long-lived request means that upstream has ended
+                    // its half — the spec's graceful closure. Discarding it would leave
+                    // the client waiting on a stream nobody is serving any more.
+                    .subscribe(r -> upstreamSubscriptionClosed(clientId, serverId),
+                            e -> upstreamSubscriptionClosed(clientId, serverId));
         });
         audit.record(caller.subject(), "*", "subscription", "subscriptions/listen",
                 AuditLog.Outcome.ALLOWED, "subscription opened",
@@ -546,6 +549,35 @@ public class GatewayService {
                 .toList();
         if (!uris.isEmpty()) out.put("resourceSubscriptions", uris);
         return out;
+    }
+
+    /**
+     * Where out-of-band responses go — set by the transport that has a channel to the
+     * client. Null in HTTP mode, where there is nowhere to push.
+     */
+    private volatile java.util.function.Consumer<Mcp.Response> outOfBand;
+
+    public void onOutOfBandResponse(java.util.function.Consumer<Mcp.Response> sink) {
+        this.outOfBand = sink;
+    }
+
+    /**
+     * Handles one upstream ending its half of a subscription.
+     *
+     * <p>The client's subscription only ends when every upstream has; one server shutting
+     * down cleanly should not close a stream the others are still serving. When the last
+     * one goes, the client gets the empty response the spec defines for graceful closure —
+     * which is how it tells a clean end from a dropped transport.
+     */
+    private void upstreamSubscriptionClosed(String clientId, String serverId) {
+        if (!subscriptions.upstreamClosed(clientId, serverId)) return;
+
+        var sink = outOfBand;
+        if (sink == null) return;
+
+        sink.accept(Mcp.Response.ok(clientId, Map.of(
+                "resultType", "complete",
+                "_meta", Map.of(NotificationGate.SUBSCRIPTION_ID, clientId))));
     }
 
     /** Tears down a subscription the client cancelled. */

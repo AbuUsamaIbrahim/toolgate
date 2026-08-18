@@ -330,6 +330,11 @@ Cancellation tears down the upstream subscriptions. One upstream dying does not 
 client's subscription — the others are still serving it, and doing otherwise would let a
 single crashy server silence every other.
 
+**Graceful closure** works the same way. The spec ends a subscription with an empty response
+to the original long-lived request, which is how a client tells a clean end from a dropped
+transport. The gateway only sends it once *every* upstream has closed; until then the
+subscription is still being served, just by fewer servers.
+
 **Only stdio carries notifications.** Streamable HTTP delivers server-initiated messages
 over SSE, which this gateway does not implement — so over HTTP they never arrive at all.
 That is stated here rather than left to be discovered, because "notifications silently

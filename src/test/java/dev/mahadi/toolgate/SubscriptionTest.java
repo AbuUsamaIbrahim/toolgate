@@ -162,6 +162,54 @@ class SubscriptionTest {
         }
 
         @Test
+        @DisplayName("one upstream closing cleanly does not end the client's subscription")
+        void oneUpstreamClosing() {
+            registry.open("1", filter(Set.of(), true), Map.of("A", "up-1-A", "B", "up-1-B"));
+
+            // A subscription spanning five servers should not end because one of them
+            // shut down tidily.
+            assertThat(registry.upstreamClosed("1", "A")).isFalse();
+            assertThat(registry.byClientId("1")).isPresent();
+
+            // B is still serving it.
+            assertThat(gate.evaluate("B", onStream("notifications/tools/list_changed", "up-1-B", null)))
+                    .isInstanceOf(NotificationGate.Verdict.Forward.class);
+            // A is not.
+            assertThat(gate.evaluate("A", onStream("notifications/tools/list_changed", "up-1-A", null)))
+                    .isInstanceOf(NotificationGate.Verdict.Drop.class);
+        }
+
+        @Test
+        @DisplayName("the last upstream closing ends the client's subscription")
+        void lastUpstreamClosing() {
+            registry.open("1", filter(Set.of(), true), Map.of("A", "up-1-A", "B", "up-1-B"));
+
+            assertThat(registry.upstreamClosed("1", "A")).isFalse();
+            // Only now is there nobody left to serve it, so the client gets the empty
+            // response that distinguishes a clean end from a dropped transport.
+            assertThat(registry.upstreamClosed("1", "B")).isTrue();
+            assertThat(registry.byClientId("1")).isEmpty();
+        }
+
+        @Test
+        @DisplayName("closing an upstream twice does not end the subscription early")
+        void closingTwiceIsSafe() {
+            registry.open("1", filter(Set.of(), true), Map.of("A", "up-1-A", "B", "up-1-B"));
+
+            // The subscribe callback fires on both completion and error, so a duplicate is
+            // entirely possible and must not be mistaken for the last upstream leaving.
+            assertThat(registry.upstreamClosed("1", "A")).isFalse();
+            assertThat(registry.upstreamClosed("1", "A")).isFalse();
+            assertThat(registry.byClientId("1")).isPresent();
+        }
+
+        @Test
+        @DisplayName("closing an upstream on a subscription that never existed is harmless")
+        void closingUnknownSubscription() {
+            assertThat(registry.upstreamClosed("nope", "A")).isFalse();
+        }
+
+        @Test
         @DisplayName("one upstream dying does not silence the others")
         void upstreamDeathIsContained() {
             registry.open("1", filter(Set.of(), true), Map.of("A", "up-1-A", "B", "up-1-B"));
