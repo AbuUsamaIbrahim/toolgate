@@ -368,6 +368,55 @@ public class PolicyEngine {
         return new Decision.Allow("allowlisted and scheme permitted");
     }
 
+    /**
+     * Checks the elicitation requests a server has embedded in a result.
+     *
+     * <p>Elicitation does not arrive as a request of its own — it is delivered inside an
+     * {@code InputRequiredResult}, attached to the answer to something the agent asked for.
+     * So it has to be screened on the way back, in the same pass that screens tool output,
+     * and a server that cannot get instructions past the metadata checks may well try
+     * asking the user directly instead.
+     *
+     * @return a refusal, or empty if every embedded request is acceptable
+     */
+    @SuppressWarnings("unchecked")
+    public java.util.Optional<Decision.Deny> screenElicitations(String serverId, Object result) {
+        if (!(result instanceof java.util.Map<?, ?> map)) return java.util.Optional.empty();
+
+        Object requests = map.get("inputRequests");
+        if (!(requests instanceof java.util.List<?> list)) return java.util.Optional.empty();
+
+        for (Object entry : list) {
+            if (!(entry instanceof java.util.Map<?, ?> request)) continue;
+            if (!"elicitation/create".equals(request.get("method"))) continue;
+
+            Object rawParams = request.get("params");
+            java.util.Map<String, Object> params = rawParams instanceof java.util.Map<?, ?> m
+                    ? (java.util.Map<String, Object>) m : java.util.Map.of();
+
+            String mode = params.get("mode") == null ? "form" : String.valueOf(params.get("mode"));
+            String message = params.get("message") == null ? null
+                    : String.valueOf(params.get("message"));
+
+            ElicitationGuard.Verdict verdict;
+            if ("url".equals(mode)) {
+                verdict = ElicitationGuard.checkUrl(
+                        params.get("url") == null ? null : String.valueOf(params.get("url")),
+                        props.allowedElicitationHosts(serverId));
+            } else {
+                Object schema = params.get("requestedSchema");
+                verdict = ElicitationGuard.checkForm(message,
+                        schema instanceof java.util.Map<?, ?> sm
+                                ? (java.util.Map<String, Object>) sm : null);
+            }
+
+            if (!verdict.allowed()) {
+                return java.util.Optional.of(new Decision.Deny(verdict.reason(), verdict.evidence()));
+            }
+        }
+        return java.util.Optional.empty();
+    }
+
     public boolean isPromptPermitted(AccessToken caller, String serverId, String name) {
         return !props.failedClosed() && props.isPromptAllowed(caller.teams(), serverId, name);
     }

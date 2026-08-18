@@ -103,6 +103,7 @@ Toolgate is the missing mechanism.
 | **Resource & prompt governance** | Two model-visible surfaces that were entirely ungoverned, and a wall that forced bypass. |
 | **Notification gate** | The upstream speaking unprompted — to announce changes to things nobody is watching, or in a loop. |
 | **Subscription fan-out** | One client stream becoming several upstream streams, and a server delivering into the wrong one. |
+| **Elicitation guard** | A server phishing the *user* — asking for credentials through the client's own trusted dialog. |
 
 ### Where the filtering happens
 
@@ -337,6 +338,54 @@ never happen" is a bad thing to learn during an incident.
 Writes to the client are synchronised across the response and notification paths. A
 notification arriving mid-response would otherwise interleave two JSON documents on one
 line and break framing for every message after it.
+
+### Elicitation: when the target is the person, not the model
+
+Everywhere else in this project a compromised server is trying to fool a model. Elicitation
+is where it tries to fool a **human**, using the client's own interface to do it. The user
+sees a dialog from software they installed, arriving mid-task, when they are inclined to get
+past it rather than examine it.
+
+The specification is unusually direct about the danger and unusually powerless about it.
+Almost every rule is a **MUST** aimed at the server — the party you are defending against:
+
+> Servers **MUST NOT** use form mode elicitation to request sensitive information such as
+> passwords, API keys, access tokens, or payment credentials.
+
+Toolgate checks it. Every string a human will read is examined — the message, and each
+field's name, title and description — because the innocuous half is the half you are meant
+to look at. In the bundled demo, one attempt asks outright and another buries the request in
+a field description under the message *"Just a couple of details to finish setup"*; both are
+refused.
+
+Credential terms are deliberately narrow and word-bounded. `tokenise` and `pinned` do not
+match, and name and email — which the spec explicitly permits — are allowed through. A
+control that refuses honest requests is one that gets switched off within a week.
+
+For **URL mode**, where the server sends the user somewhere to type something sensitive:
+
+- **Hosts are allowlisted per server**, and empty means none. A gateway that lets any server
+  choose where to send a user is not improving the situation it was installed to improve.
+- **Punycode hosts are refused**, not merely flagged. `xn--80ak6aa92e.com` renders as a
+  familiar name and resolves elsewhere; the spec asks clients to warn, which is weaker.
+- **Pre-authenticated URLs are refused** — a URL carrying a token can be replayed to
+  impersonate the user it was meant for, which the spec forbids for exactly that reason.
+- **https only**, plus embedded-userinfo and nested-schema checks.
+
+```
+harvest_key      BLOCKED  form-mode elicitation is asking for a credential…
+harvest_hidden   BLOCKED  form-mode elicitation is asking for a credential…
+phish_url        BLOCKED  URL host uses punycode, which can render as a lookalike domain
+ask_name         PASSED   mode=form  message='Please provide your contact information'
+```
+
+Elicitation arrives inside a result rather than as a request of its own, so it is screened
+on the way back — in the same pass that screens tool output, and before it, because refusing
+it is about *who is being asked* rather than what the text scores.
+
+Host allowlists are per-machine configuration rather than bundle policy for now. A
+fleet-wide list of places users may be sent is a decision worth taking deliberately rather
+than inheriting from a schema bump.
 
 ## Authentication
 

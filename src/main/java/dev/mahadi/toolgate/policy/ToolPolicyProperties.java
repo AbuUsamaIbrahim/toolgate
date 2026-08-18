@@ -65,6 +65,15 @@ public class ToolPolicyProperties {
          */
         private Set<String> allowedUriSchemes = Set.of("file", "git");
         /**
+         * Hosts this server may send a user to in a URL-mode elicitation.
+         *
+         * <p>Empty by default, which means none. A URL-mode elicitation asks a human to
+         * open a page and type something sensitive into it; a gateway that lets any server
+         * choose the destination is not improving the situation it was installed to
+         * improve.
+         */
+        private Set<String> allowedElicitationHosts = Set.of();
+        /**
          * The gateway's own credential for this upstream, if it requires one. Never the
          * caller's token — see {@code UpstreamClient} for why that distinction matters.
          */
@@ -86,6 +95,8 @@ public class ToolPolicyProperties {
         public void setAllowPrompts(Set<String> allowPrompts) { this.allowPrompts = allowPrompts; }
         public Set<String> getAllowedUriSchemes() { return allowedUriSchemes; }
         public void setAllowedUriSchemes(Set<String> allowedUriSchemes) { this.allowedUriSchemes = allowedUriSchemes; }
+        public Set<String> getAllowedElicitationHosts() { return allowedElicitationHosts; }
+        public void setAllowedElicitationHosts(Set<String> allowedElicitationHosts) { this.allowedElicitationHosts = allowedElicitationHosts; }
         public String getToken() { return token; }
         public void setToken(String token) { this.token = token; }
     }
@@ -126,6 +137,11 @@ public class ToolPolicyProperties {
     public boolean isPromptAllowed(String serverId, String name) {
         Server server = servers.get(serverId);
         return server != null && server.getAllowPrompts().contains(name);
+    }
+
+    public Set<String> allowedElicitationHosts(String serverId) {
+        Server server = servers.get(serverId);
+        return server == null ? Set.of() : server.getAllowedElicitationHosts();
     }
 
     public Set<String> resourceRules(String serverId) {

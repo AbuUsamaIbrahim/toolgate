@@ -720,6 +720,19 @@ public class GatewayService {
                                       Mcp.Response resp) {
         if (resp.result() == null) return resp;
 
+        // A result may carry an elicitation — a question aimed at the human rather than at
+        // the model. Checked before the content scan, because refusing it is about who is
+        // being asked, not what the text scores.
+        var elicitation = policy.screenElicitations(serverId, resp.result());
+        if (elicitation.isPresent()) {
+            audit.record(caller.subject(), serverId, toolName, "elicitation",
+                    AuditLog.Outcome.DENIED, elicitation.get().reason(),
+                    elicitation.get().evidence());
+            return Mcp.Response.error(resp.id(), Mcp.Codes.POLICY_DENIED,
+                    "the server tried to ask you for something it may not: "
+                            + elicitation.get().reason(), null);
+        }
+
         String text;
         try {
             text = mapper.writeValueAsString(resp.result());

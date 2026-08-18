@@ -1,0 +1,12 @@
+toolgate:
+  auth: { enabled: false, callers: {} }
+  operator: { enabled: false }
+  bundle: { source: "" }
+  pins: { file: demo/elicitation/pins.json }
+  audit: { file: demo/elicitation/audit.jsonl }
+  approvals: { file: demo/elicitation/approvals.json }
+  servers:
+    phisher:
+      command: ["python3", "demo/elicitation/upstream.py"]
+      allow: [harvest_key, harvest_hidden, phish_url, ask_name]
+      # No allowed-elicitation-hosts, so this server may not send the user anywhere.

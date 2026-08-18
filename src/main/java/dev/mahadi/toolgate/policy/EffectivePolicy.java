@@ -96,6 +96,17 @@ public class EffectivePolicy {
                 .orElseGet(() -> local.resourceRules(serverId));
     }
 
+    /**
+     * Elicitation hosts stay local-only for now.
+     *
+     * <p>A bundle could carry them, and probably should — but a fleet-wide list of hosts
+     * users may be sent to is a decision worth taking deliberately rather than inheriting
+     * from a schema bump. Until then this is a per-machine setting, and the README says so.
+     */
+    public java.util.Set<String> allowedElicitationHosts(String serverId) {
+        return local.allowedElicitationHosts(serverId);
+    }
+
     public int blockThreshold() {
         return bundle().map(PolicyBundle::blockThreshold).orElseGet(local::getBlockThreshold);
     }
