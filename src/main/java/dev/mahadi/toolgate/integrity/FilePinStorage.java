@@ -175,12 +175,7 @@ public class FilePinStorage implements PinStorage {
     }
 
     private static void restrictPermissions(Path file) {
-        try {
-            Files.setPosixFilePermissions(file, Set.of(
-                    PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
-        } catch (UnsupportedOperationException | IOException e) {
-            log.debug("Could not set permissions on {}: {}", file, e.toString());
-        }
+        dev.mahadi.toolgate.util.FilePaths.restrictToOwner(file);
     }
 
     /**
@@ -212,10 +207,6 @@ public class FilePinStorage implements PinStorage {
     }
 
     private Path path() {
-        String configured = props.getFile();
-        if (configured.startsWith("~/")) {
-            configured = System.getProperty("user.home") + configured.substring(1);
-        }
-        return Path.of(configured);
+        return dev.mahadi.toolgate.util.FilePaths.expandUser(props.getFile());
     }
 }

@@ -83,6 +83,31 @@ toolgate:
     file: ~/.toolgate/pins.json
     require-secure-permissions: true
 
+  # -------------------------------------------------------------------------
+  # Audit trail. The in-memory ring buffer behind GET /toolgate/audit is a
+  # convenience; this is the record. Written as JSON Lines, appended and
+  # flushed per entry, never rewritten — point logrotate at it.
+  #
+  # fail-closed: refuse requests when the trail cannot be written. Correct
+  # where "no record" means "did not happen"; wrong where the gateway is what
+  # stands between an agent and a poisoned tool, since it disables the
+  # protection to protect the paperwork. Off by default.
+  # -------------------------------------------------------------------------
+  audit:
+    file: ~/.toolgate/audit.jsonl
+    fail-closed: false
+
+  # -------------------------------------------------------------------------
+  # Approval queue. Outstanding requests survive a restart so a deploy does not
+  # empty the queue an operator is working through.
+  #
+  # Granted approvals are deliberately NOT persisted. A grant is permission for
+  # one call in one moment; writing it down would turn a momentary "yes" into a
+  # standing permission. A restart revokes every outstanding grant, by design.
+  # -------------------------------------------------------------------------
+  approvals:
+    file: ~/.toolgate/approvals.json
+
   block-threshold: 50
   approve-first-sighting: false
   # Upstreams. None by default — configure your own. An upstream is reached either

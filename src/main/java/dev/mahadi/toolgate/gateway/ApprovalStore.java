@@ -1,9 +1,20 @@
 package dev.mahadi.toolgate.gateway;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.mahadi.toolgate.util.FilePaths;
+import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -20,6 +31,21 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Grants are single-use and expire. A standing approval is just an allowlist entry
  * with extra steps, and a reusable one would let a compromised agent replay a human's
  * single "yes" indefinitely.
+ *
+ * <h2>What survives a restart, and what deliberately does not</h2>
+ * Pending <em>requests</em> are written to disk. They represent a decision a human still
+ * owes, and losing the queue during a deploy means an operator reviewing a suspicious call
+ * watches it vanish mid-review.
+ *
+ * <p>Granted approvals are never written. A grant is permission for one call, in one
+ * moment, in a context a person had in their head at the time — and it is already
+ * consumed within seconds. Persisting it would turn a momentary "yes" into a standing
+ * permission that outlives the situation that justified it, which is the failure mode the
+ * single-use rule exists to prevent. Restarting the gateway revokes every outstanding
+ * grant, and that is the correct behaviour rather than a gap.
+ *
+ * <p>Expired requests are dropped on load for the same reason: a queue that survived a
+ * three-day outage is a list of decisions nobody should still be making.
  */
 @Component
 public class ApprovalStore {
@@ -33,13 +59,24 @@ public class ApprovalStore {
         }
     }
 
+    private static final Logger log = LoggerFactory.getLogger(ApprovalStore.class);
+
     private final Map<String, Pending> pending = new ConcurrentHashMap<>();
     private final Map<String, Instant> granted = new ConcurrentHashMap<>();
+
+    private final ApprovalProperties props;
+    private final ObjectMapper mapper;
+
+    public ApprovalStore(ApprovalProperties props, ObjectMapper mapper) {
+        this.props = props;
+        this.mapper = mapper;
+    }
 
     public Pending request(String caller, String serverId, String tool, String reason) {
         Pending p = new Pending(UUID.randomUUID().toString(), caller, serverId, tool,
                 reason, Instant.now());
         pending.put(p.id(), p);
+        persist();
         return p;
     }
 
@@ -48,11 +85,14 @@ public class ApprovalStore {
         Pending p = pending.remove(id);
         if (p == null || p.expired()) return Optional.empty();
         granted.put(grantKey(p.caller(), p.serverId(), p.tool()), Instant.now());
+        persist();
         return Optional.of(p);
     }
 
     public Optional<Pending> deny(String id) {
-        return Optional.ofNullable(pending.remove(id));
+        Optional<Pending> p = Optional.ofNullable(pending.remove(id));
+        p.ifPresent(x -> persist());
+        return p;
     }
 
     /** Consumes a grant if one exists. Single-use by construction. */
@@ -71,5 +111,43 @@ public class ApprovalStore {
 
     private static String grantKey(String caller, String serverId, String tool) {
         return caller + "|" + serverId + "|" + tool;
+    }
+
+    private boolean persistent() {
+        return props != null && props.getFile() != null && !props.getFile().isBlank();
+    }
+
+    @PostConstruct
+    public void restore() {
+        if (!persistent()) return;
+        Path path = FilePaths.expandUser(props.getFile());
+        if (!Files.exists(path)) return;
+        try {
+            List<Pending> loaded = mapper.readValue(Files.readAllBytes(path),
+                    new TypeReference<List<Pending>>() {});
+            loaded.stream().filter(p -> !p.expired()).forEach(p -> pending.put(p.id(), p));
+            log.info("Restored {} outstanding approval request(s)", pending.size());
+        } catch (IOException e) {
+            // Unlike the pin file, an unreadable queue is not a security failure: the
+            // worst case is that an operator re-approves a call the agent retries. Losing
+            // it must not stop the gateway enforcing everything else.
+            log.warn("Could not read approval queue {} — starting with an empty queue: {}",
+                    path, e.toString());
+        }
+    }
+
+    private synchronized void persist() {
+        if (!persistent()) return;
+        Path path = FilePaths.expandUser(props.getFile());
+        try {
+            Files.createDirectories(path.getParent());
+            Path tmp = path.resolveSibling(path.getFileName() + ".tmp");
+            Files.write(tmp, mapper.writeValueAsBytes(List.copyOf(pending.values())));
+            FilePaths.restrictToOwner(tmp);
+            Files.move(tmp, path, StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException e) {
+            log.error("Could not persist approval queue: {}", e.toString());
+        }
     }
 }

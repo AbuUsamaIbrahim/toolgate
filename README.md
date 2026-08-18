@@ -49,6 +49,7 @@ Toolgate is the missing mechanism.
 | **Caller authentication** | An agent asserting whatever identity it likes. Bearer tokens, scopes, OAuth-shaped challenges. |
 | **Durable pins** | The trust store evaporating on restart and silently re-approving everything. |
 | **Drift diff** | An alert an operator has no way to evaluate. Shows exactly which field changed. |
+| **Durable audit trail** | The record of what happened evaporating on the restart that follows the incident. |
 | **Header-mirror confinement** | `x-mcp-header` letting a tool definition write arbitrary HTTP headers. |
 
 ### Where the filtering happens
@@ -196,6 +197,38 @@ things a human needs to be able to do. That is also why it is not SQLite — an 
 obstructs every one of those workflows, and would add a per-platform native library to
 something desktop clients launch as a subprocess.
 
+## What survives a restart
+
+| State | Persisted | Why |
+|---|---|---|
+| Tool pins | Yes | Losing them re-approves every tool. Silent disarm. |
+| Audit trail | Yes | The ring buffer forgets the start of an incident as you begin investigating it. |
+| Pending approvals | Yes | A deploy mid-review should not empty the operator's queue. |
+| **Granted approvals** | **No — deliberately** | See below. |
+
+A grant is permission for one call, in one moment, in a context a person had in their head
+at the time. Writing it to disk would turn a momentary "yes" into a standing permission
+that outlives the situation that justified it — which is the exact failure the single-use
+rule exists to prevent. Restarting the gateway revokes every outstanding grant. That is the
+behaviour, not a gap in it.
+
+Expired requests are dropped when the queue is loaded, for the same reason: a queue that
+survived a three-day outage is a list of decisions nobody should still be making.
+
+The audit trail is JSON Lines, flushed per entry rather than buffered — the entries worth
+having are the ones written in the seconds before a process died. It is never rewritten in
+process; point `logrotate` at it.
+
+```bash
+jq -r 'select(.outcome=="DENIED") | "\(.at) \(.tool) — \(.reason)"' ~/.toolgate/audit.jsonl
+```
+
+Setting `toolgate.audit.fail-closed: true` makes an unwritable trail refuse requests. It is
+off by default, and the choice is a real one: fail-closed is correct where "no record" is
+legally equivalent to "did not happen", and wrong where the gateway is what stands between
+an agent and a poisoned tool — there it disables the protection in order to protect the
+paperwork.
+
 ## Honest limitations
 
 Worth stating plainly, because a security tool that oversells itself is worse than none:
@@ -206,9 +239,9 @@ Worth stating plainly, because a security tool that oversells itself is worse th
 - **Pattern matching loses on its own.** The injection scanner catches the unsophisticated
   majority. An attacker who knows the rules can phrase around them. It scores rather than
   blocks, and exists as defence in depth — not as an oracle.
-- **Approvals and the audit log are still in memory.** Pins now persist; these do not. A
-  restart forgets outstanding approvals and the decision history. The audit trail in
-  particular belongs on a durable append-only sink the gateway cannot rewrite.
+- **The audit trail is a local file.** It is append-only from this process's side, but
+  anything with write access to the disk can edit it. A deployment that needs a record it
+  cannot rewrite should ship the lines to a sink it does not control.
 - **The operator credential is a bearer token in a config file.** It is separate from the
   agent's token and defaults to loopback-only, but it is still a static shared secret. A
   deployment with real identity infrastructure should front `/toolgate/**` with it.

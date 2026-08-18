@@ -17,9 +17,11 @@ import java.util.List;
  * "which tools ran" but "what did the gateway decide, and on what evidence" — a denial
  * with its reasoning is worth more than a hundred success lines.
  *
- * <p>In-memory with a bounded ring buffer. That is the right shape for a reference
- * implementation and the wrong shape for production, where these events belong on a
- * durable append-only sink the gateway itself cannot rewrite.
+ * <p>A bounded in-memory ring buffer serves the operator API, so {@code GET
+ * /toolgate/audit} stays a cheap read. It is not the record. The record is
+ * {@link AuditSink}, which appends every entry to disk — a ring buffer forgets the
+ * beginning of an incident at exactly the point someone starts investigating it, and a
+ * restart forgets all of it.
  */
 @Component
 public class AuditLog {
@@ -28,6 +30,12 @@ public class AuditLog {
     private static final int CAPACITY = 1000;
 
     private final Deque<Entry> entries = new ArrayDeque<>(CAPACITY);
+
+    private final AuditSink sink;
+
+    public AuditLog(AuditSink sink) {
+        this.sink = sink;
+    }
 
     public enum Outcome { ALLOWED, DENIED, APPROVAL_REQUIRED, APPROVED, FAILED }
 
@@ -41,9 +49,15 @@ public class AuditLog {
             String reason,
             List<String> evidence) {}
 
-    public synchronized void record(Entry entry) {
-        if (entries.size() >= CAPACITY) entries.removeFirst();
-        entries.addLast(entry);
+    public void record(Entry entry) {
+        // Durable first. If this deployment fails closed on an unwritable trail, the
+        // throw must happen before anything reports the decision as recorded.
+        sink.append(entry);
+
+        synchronized (this) {
+            if (entries.size() >= CAPACITY) entries.removeFirst();
+            entries.addLast(entry);
+        }
 
         // Structured so a log pipeline can alert on outcome without parsing prose.
         log.info("outcome={} action={} caller={} tool={}/{} reason=\"{}\" evidence={}",

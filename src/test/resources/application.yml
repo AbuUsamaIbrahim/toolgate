@@ -1,0 +1,20 @@
+# Test configuration.
+#
+# The point of this file is the three paths below. Without it the suite inherits the
+# shipped defaults and writes to ~/.toolgate — so running `mvn test` on a machine that
+# also runs the gateway would overwrite the operator's real pin file, which is the trust
+# store the whole poisoning defence depends on. A test run must never be able to
+# re-approve a tool on the machine it runs on.
+toolgate:
+  pins:
+    file: target/test-state/pins.json
+  audit:
+    file: target/test-state/audit.jsonl
+  approvals:
+    file: target/test-state/approvals.json
+  operator:
+    enabled: false        # per-test where it is the subject; off for everything else
+  auth:
+    enabled: false
+    callers: {}
+  servers: {}
