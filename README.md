@@ -335,6 +335,15 @@ to the original long-lived request, which is how a client tells a clean end from
 transport. The gateway only sends it once *every* upstream has closed; until then the
 subscription is still being served, just by fewer servers.
 
+**Both transports carry notifications, in both directions.** An HTTP upstream's
+`subscriptions/listen` reply is an SSE stream the gateway consumes, and the notifications on
+it are gated and re-emitted to the client on its own stream — see
+[`demo/http-upstream`](demo/http-upstream/).
+
+The timeout has to be conditional as a result: twenty seconds is right for a request that
+should answer promptly and wrong for a subscription, where silence means a server with
+nothing to report rather than a hung one.
+
 **Both transports carry notifications.** Over stdio everything shares one channel, so each
 message carries the subscription id. Over Streamable HTTP a `subscriptions/listen` response
 *is* an SSE stream that stays open, so each subscription has its own — but the id is

@@ -494,11 +494,15 @@ public class GatewayService {
             upstream.send(serverId, new Mcp.Request("2.0", upstreamId,
                             Mcp.METHOD_SUBSCRIPTIONS_LISTEN, params,
                             Map.of(Mcp.META_PROTOCOL_VERSION, Mcp.PROTOCOL_VERSION)))
-                    // A response to a long-lived request means that upstream has ended
-                    // its half — the spec's graceful closure. Discarding it would leave
-                    // the client waiting on a stream nobody is serving any more.
-                    .subscribe(r -> upstreamSubscriptionClosed(clientId, serverId),
-                            e -> upstreamSubscriptionClosed(clientId, serverId));
+                    // The end of the upstream's half, however it ends. A response means
+                    // graceful closure; an error means the transport dropped; and an SSE
+                    // stream that simply closes completes EMPTY, which neither an onNext
+                    // nor an onError callback would ever see. doFinally catches all three,
+                    // and missing the third would leave a client waiting on a stream
+                    // nobody is serving.
+                    .doFinally(signal -> upstreamSubscriptionClosed(clientId, serverId))
+                    .subscribe(r -> { }, e -> log.debug("subscription to {} ended: {}",
+                            serverId, e.toString()));
         });
         audit.record(caller.subject(), "*", "subscription", "subscriptions/listen",
                 AuditLog.Outcome.ALLOWED, "subscription opened",

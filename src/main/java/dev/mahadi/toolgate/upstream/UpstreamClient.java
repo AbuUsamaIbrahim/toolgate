@@ -36,10 +36,9 @@ public class UpstreamClient {
     /**
      * Notified when an upstream speaks unprompted.
      *
-     * <p>Only stdio upstreams can do this today. Streamable HTTP carries server-initiated
-     * messages over SSE, which this gateway does not implement — stated in the README
-     * rather than left to be discovered, because "notifications silently never arrive" is
-     * a bad thing to find out during an incident.
+     * <p>Both bindings can do this. On stdio a notification is a line with no id; on
+     * Streamable HTTP it is an event on the SSE stream a request opened. The difference is
+     * entirely in the transport, which is the point of having one.
      */
     private volatile java.util.function.BiConsumer<String, Mcp.Request> notificationListener;
 
@@ -47,6 +46,7 @@ public class UpstreamClient {
         this.notificationListener = listener;
         transports.forEach((id, t) -> {
             if (t instanceof StdioUpstream stdio) stdio.onNotification(listener);
+            if (t instanceof HttpUpstream http) http.onNotification(listener);
         });
     }
 
@@ -101,7 +101,12 @@ public class UpstreamClient {
                 }
             }
             if (hasUrl) {
-                return new HttpUpstream(builder, server.getUrl(), server.getToken());
+                HttpUpstream http = new HttpUpstream(builder, id, server.getUrl(),
+                        server.getToken(), mapper);
+                // Same as stdio: upstreams are created lazily, so a listener registered
+                // before this one existed still has to reach it.
+                if (notificationListener != null) http.onNotification(notificationListener);
+                return http;
             }
             throw new IllegalStateException("upstream '" + id + "' has neither command nor url");
         });

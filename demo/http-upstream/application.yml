@@ -1,0 +1,12 @@
+toolgate:
+  auth: { enabled: false, callers: {}, allowed-origins: [] }
+  operator: { enabled: false }
+  bundle: { source: "" }
+  pins: { file: demo/http-upstream/pins.json }
+  audit: { file: demo/http-upstream/audit.jsonl }
+  approvals: { file: demo/http-upstream/approvals.json }
+  servers:
+    remote:
+      url: http://127.0.0.1:9200
+      allow-resources: ["file:///http/one.md"]
+      allowed-uri-schemes: [file]

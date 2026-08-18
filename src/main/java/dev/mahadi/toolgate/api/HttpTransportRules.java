@@ -122,7 +122,7 @@ public final class HttpTransportRules {
      * as plain ASCII. Comparing without decoding would let any non-ASCII name bypass the
      * check simply by being encoded.
      */
-    static String decodeSentinel(String value) {
+    public static String decodeSentinel(String value) {
         String trimmed = value.trim();
         if (!trimmed.startsWith(SENTINEL_PREFIX) || !trimmed.endsWith(SENTINEL_SUFFIX)) {
             return trimmed;
