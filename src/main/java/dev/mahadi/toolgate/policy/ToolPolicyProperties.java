@@ -39,6 +39,11 @@ public class ToolPolicyProperties {
         private Set<String> allow = Set.of();
         /** Subset of {@link #allow} that additionally requires human approval to call. */
         private Set<String> requireApproval = Set.of();
+        /**
+         * The gateway's own credential for this upstream, if it requires one. Never the
+         * caller's token — see {@code UpstreamClient} for why that distinction matters.
+         */
+        private String token;
 
         public String getUrl() { return url; }
         public void setUrl(String url) { this.url = url; }
@@ -46,6 +51,8 @@ public class ToolPolicyProperties {
         public void setAllow(Set<String> allow) { this.allow = allow; }
         public Set<String> getRequireApproval() { return requireApproval; }
         public void setRequireApproval(Set<String> requireApproval) { this.requireApproval = requireApproval; }
+        public String getToken() { return token; }
+        public void setToken(String token) { this.token = token; }
     }
 
     /**

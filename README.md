@@ -45,6 +45,7 @@ Toolgate is the missing mechanism.
 | **Human approval** | Destructive operations proceeding without a person in the loop. |
 | **Audit log** | "What did the gateway decide, and on what evidence?" |
 | **Namespacing** | Tool-name collisions across servers, which the spec warns proxies must handle. |
+| **Caller authentication** | An agent asserting whatever identity it likes. Bearer tokens, scopes, OAuth-shaped challenges. |
 
 ### Where the filtering happens
 
@@ -59,6 +60,52 @@ model ever sees them.
 Call-time checks still run, because a client may invoke a tool it was never offered, and a
 gateway that assumes otherwise is trusting the caller to enforce its own restrictions.
 
+## Authentication
+
+Callers present a bearer token on every request, as OAuth 2.1 and the MCP authorization
+specification require:
+
+```http
+POST /mcp
+Authorization: Bearer <token>
+```
+
+Identity comes from the validated token, not from a header the caller controls — so the
+audit trail records who a caller *is*, not who they claimed to be, and per-caller policy
+becomes enforceable.
+
+Two scopes: `tools:read` to see the catalogue, `tools:call` to invoke anything. Discovery
+needs neither, so a client can still learn which protocol version the gateway speaks.
+
+Failures follow the spec:
+
+| Situation | Response |
+|---|---|
+| No or unrecognised token | `401` + `WWW-Authenticate: Bearer resource_metadata="…"` |
+| Valid token, wrong scope | `403` + `error="insufficient_scope", scope="tools:call"` |
+
+The metadata document required by RFC 9728 is served at
+`/.well-known/oauth-protected-resource`, which is what makes a `401` actionable rather
+than merely correct.
+
+Tokens are configured as SHA-256 hashes and compared in constant time. Every configured
+caller is checked on each attempt rather than returning on first match, so timing does not
+reveal where a token sits in the map.
+
+### The caller's token never goes upstream
+
+The specification is blunt about this:
+
+> MCP servers **MUST NOT** accept or transit any other tokens.
+
+A proxy that forwards the agent's bearer token to an upstream has built the confused
+deputy in its textbook form: the upstream receives a credential minted for the gateway,
+and can replay it against the gateway wearing the caller's identity.
+
+Each upstream therefore gets its own credential from configuration, or none at all. There
+is no code path that copies an inbound `Authorization` header — `UpstreamClient.send` does
+not take one, so passthrough is impossible rather than merely discouraged.
+
 ## Honest limitations
 
 Worth stating plainly, because a security tool that oversells itself is worse than none:
@@ -72,7 +119,12 @@ Worth stating plainly, because a security tool that oversells itself is worse th
 - **In-memory state.** Pins, approvals and the audit log do not survive a restart. Fine for
   a reference implementation; production needs a durable, append-only sink the gateway
   itself cannot rewrite.
-- **No authentication of callers yet.** `X-Toolgate-Caller` is asserted, not proved.
+- **The bundled token validator is static.** It checks hashes from configuration, which
+  suits a self-hosted gateway. A deployment with a real OAuth 2.1 authorization server
+  should implement `TokenValidator` against JWT verification or token introspection — the
+  interface exists for exactly that, and nothing else in the gateway changes.
+- **No token expiry or revocation** in the static validator. Rotating a token means
+  editing configuration.
 
 ## Running
 
@@ -126,6 +178,10 @@ buried in a nested schema field, zero-width-unicode smuggling, an unlisted tool 
 in `tools/list`, a call to a tool that was never advertised, destructive-tool approval,
 poisoned tool *output*, protocol-version rejection, and fingerprint canonicalisation
 (key reordering must not alter the hash; `"1"` and `1` must not collide).
+
+Authentication is covered separately: missing and unrecognised tokens, insufficient scope,
+case-insensitive scheme handling, the metadata document, and a spoofed caller header being
+ignored in favour of the token subject.
 
 ## Licence
 

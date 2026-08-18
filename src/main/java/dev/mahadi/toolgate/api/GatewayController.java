@@ -1,53 +1,148 @@
 package dev.mahadi.toolgate.api;
 
 import dev.mahadi.toolgate.audit.AuditLog;
+import dev.mahadi.toolgate.auth.AccessToken;
+import dev.mahadi.toolgate.auth.AuthProperties;
+import dev.mahadi.toolgate.auth.TokenValidator;
 import dev.mahadi.toolgate.gateway.ApprovalStore;
 import dev.mahadi.toolgate.gateway.GatewayService;
 import dev.mahadi.toolgate.integrity.ToolPinStore;
 import dev.mahadi.toolgate.protocol.Mcp;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
- * HTTP surface: one MCP endpoint for agents, and an operator API for everything else.
+ * HTTP surface: one authenticated MCP endpoint for agents, and an operator API.
  *
  * <p>The two are deliberately separate paths. Anything that can change policy — approving
- * a call, re-pinning a definition — must never be reachable through the same door the
- * agent uses, or a sufficiently clever agent can approve itself.
+ * a call, inspecting pins — must never be reachable through the door the agent uses, or a
+ * sufficiently capable agent approves itself.
  */
 @RestController
 public class GatewayController {
+
+    /** Scope required to see the tool catalogue. */
+    private static final String SCOPE_READ = "tools:read";
+    /** Scope required to invoke anything. */
+    private static final String SCOPE_CALL = "tools:call";
 
     private final GatewayService gateway;
     private final AuditLog audit;
     private final ApprovalStore approvals;
     private final ToolPinStore pins;
+    private final TokenValidator tokens;
+    private final AuthProperties authProps;
 
-    public GatewayController(GatewayService gateway, AuditLog audit,
-                             ApprovalStore approvals, ToolPinStore pins) {
+    public GatewayController(GatewayService gateway, AuditLog audit, ApprovalStore approvals,
+                             ToolPinStore pins, TokenValidator tokens, AuthProperties authProps) {
         this.gateway = gateway;
         this.audit = audit;
         this.approvals = approvals;
         this.pins = pins;
+        this.tokens = tokens;
+        this.authProps = authProps;
     }
 
     /** The MCP endpoint an agent points at instead of the real servers. */
     @PostMapping(path = "/mcp", consumes = "application/json", produces = "application/json")
-    public Mono<Mcp.Response> mcp(
+    public Mono<ResponseEntity<Mcp.Response>> mcp(
             @RequestBody Mcp.Request request,
             @RequestHeader(value = "MCP-Protocol-Version", required = false) String version,
-            @RequestHeader(value = "X-Toolgate-Caller", defaultValue = "anonymous") String caller) {
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization) {
 
         if (version != null && !Mcp.PROTOCOL_VERSION.equals(version)) {
-            return Mono.just(Mcp.Response.error(request.id(), Mcp.Codes.INVALID_PARAMS,
-                    "unsupported protocol version: " + version,
-                    Map.of("supported", List.of(Mcp.PROTOCOL_VERSION))));
+            return Mono.just(ResponseEntity.ok(Mcp.Response.error(request.id(),
+                    Mcp.Codes.INVALID_PARAMS, "unsupported protocol version: " + version,
+                    Map.of("supported", List.of(Mcp.PROTOCOL_VERSION)))));
         }
-        return gateway.handle(caller, request);
+
+        AccessToken caller;
+        if (authProps.isEnabled()) {
+            String bearer = extractBearer(authorization);
+            var result = tokens.validate(bearer);
+            if (result instanceof TokenValidator.Result.Invalid invalid) {
+                audit.record("unauthenticated", "-", "-", request.method(),
+                        AuditLog.Outcome.DENIED,
+                        "authentication failed: " + invalid.detail(),
+                        List.of("failure=" + invalid.failure()));
+                return Mono.just(unauthorized(request, requiredScope(request.method())));
+            }
+            caller = ((TokenValidator.Result.Valid) result).token();
+
+            String needed = requiredScope(request.method());
+            if (needed != null && !caller.hasScope(needed)) {
+                audit.record(caller.subject(), "-", "-", request.method(),
+                        AuditLog.Outcome.DENIED, "insufficient scope",
+                        List.of("required=" + needed, "granted=" + caller.scopes()));
+                return Mono.just(insufficientScope(request, needed));
+            }
+        } else {
+            // Explicitly opted out. Named so it is obvious in the audit trail that these
+            // events carry no identity worth trusting.
+            caller = new AccessToken("auth-disabled", Set.of(SCOPE_READ, SCOPE_CALL), null, null);
+        }
+
+        return gateway.handle(caller.subject(), request).map(ResponseEntity::ok);
+    }
+
+    private static String requiredScope(String method) {
+        if (method == null) return null;
+        return switch (method) {
+            case Mcp.METHOD_TOOLS_LIST -> SCOPE_READ;
+            case Mcp.METHOD_TOOLS_CALL -> SCOPE_CALL;
+            // Discovery carries no tool data and must stay reachable, otherwise a client
+            // cannot learn which protocol versions the gateway speaks.
+            default -> null;
+        };
+    }
+
+    private static String extractBearer(String header) {
+        if (header == null) return null;
+        // Scheme is case-insensitive per RFC 7235.
+        if (header.length() < 7 || !header.regionMatches(true, 0, "Bearer ", 0, 7)) return null;
+        return header.substring(7).trim();
+    }
+
+    /** 401 with the discovery pointer a client needs to go and get a token. */
+    private ResponseEntity<Mcp.Response> unauthorized(Mcp.Request request, String scope) {
+        String challenge = "Bearer resource_metadata=\"%s/.well-known/oauth-protected-resource\""
+                .formatted(baseOf(tokens.resourceUri()))
+                + (scope == null ? "" : ", scope=\"%s\"".formatted(scope));
+
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .header(HttpHeaders.WWW_AUTHENTICATE, challenge)
+                .body(Mcp.Response.error(request.id(), Mcp.Codes.POLICY_DENIED,
+                        "authentication required", null));
+    }
+
+    /** 403 with the scopes needed, so the client can step up in one round trip. */
+    private ResponseEntity<Mcp.Response> insufficientScope(Mcp.Request request, String scope) {
+        String challenge = ("Bearer error=\"insufficient_scope\", scope=\"%s\", "
+                + "resource_metadata=\"%s/.well-known/oauth-protected-resource\"")
+                .formatted(scope, baseOf(tokens.resourceUri()));
+
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .header(HttpHeaders.WWW_AUTHENTICATE, challenge)
+                .body(Mcp.Response.error(request.id(), Mcp.Codes.POLICY_DENIED,
+                        "insufficient scope: " + scope, Map.of("required_scope", scope)));
+    }
+
+    /** Strips any path from the resource URI to build the well-known location. */
+    private static String baseOf(String resourceUri) {
+        try {
+            var u = java.net.URI.create(resourceUri);
+            String port = u.getPort() == -1 ? "" : ":" + u.getPort();
+            return u.getScheme() + "://" + u.getHost() + port;
+        } catch (Exception e) {
+            return resourceUri;
+        }
     }
 
     // ---------------- operator API ----------------

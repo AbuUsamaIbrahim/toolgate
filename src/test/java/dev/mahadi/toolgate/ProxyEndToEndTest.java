@@ -59,6 +59,9 @@ class ProxyEndToEndTest {
 
     @DynamicPropertySource
     static void policy(DynamicPropertyRegistry registry) {
+        // Authentication has its own suite; disabling it here keeps these tests focused
+        // on policy and proxying rather than re-asserting auth in every scenario.
+        registry.add("toolgate.auth.enabled", () -> "false");
         registry.add("toolgate.servers.files.url", upstream::url);
         registry.add("toolgate.servers.files.allow[0]", () -> "read_file");
         registry.add("toolgate.servers.files.allow[1]", () -> "write_file");

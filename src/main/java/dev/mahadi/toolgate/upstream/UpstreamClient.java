@@ -14,10 +14,20 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Talks Streamable HTTP to the upstream MCP servers.
  *
- * <p>Reactive for the same reason his verification gateway was: a proxy is almost pure
- * I/O wait, and a thread-per-request model spends its memory on parked threads at exactly
- * the moment an upstream starts misbehaving. The component protecting everything must not
- * be the component that falls over when something behind it is slow.
+ * <p>Reactive because a proxy is almost pure I/O wait, and a thread-per-request model
+ * spends its memory on parked threads at exactly the moment an upstream starts
+ * misbehaving. The component protecting everything must not be the component that falls
+ * over when something behind it is slow.
+ *
+ * <h2>The caller's token never leaves the gateway</h2>
+ * The specification is unambiguous: a server <em>MUST NOT</em> accept or transit tokens
+ * other than those issued for itself. Forwarding the agent's bearer token to an upstream
+ * is the confused-deputy bug in its textbook form — the upstream would receive a
+ * credential scoped to the gateway, and any upstream could then replay it against the
+ * gateway wearing the caller's identity.
+ *
+ * <p>Each upstream therefore gets its own credential from configuration, or none. There
+ * is deliberately no code path that copies an inbound {@code Authorization} header.
  */
 @Component
 public class UpstreamClient {
@@ -34,19 +44,32 @@ public class UpstreamClient {
         this.builder = builder;
     }
 
-    /** Forwards a JSON-RPC request to one upstream server. */
+    /**
+     * Forwards a JSON-RPC request to one upstream server.
+     *
+     * <p>Note the absence of any parameter carrying the caller's credentials. That is the
+     * point: the signature makes token passthrough impossible rather than merely
+     * discouraged.
+     */
     public Mono<Mcp.Response> send(String serverId, Mcp.Request request) {
         ToolPolicyProperties.Server server = props.server(serverId);
         if (server == null) {
             return Mono.error(new IllegalArgumentException("unknown upstream: " + serverId));
         }
-        return client(serverId, server.getUrl())
+
+        var spec = client(serverId, server.getUrl())
                 .post()
                 .contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.APPLICATION_JSON)
                 // Carried in the header as well as _meta, per the Streamable HTTP transport.
-                .header("MCP-Protocol-Version", Mcp.PROTOCOL_VERSION)
-                .bodyValue(request)
+                .header("MCP-Protocol-Version", Mcp.PROTOCOL_VERSION);
+
+        // The gateway's own credential for this upstream — never the caller's.
+        if (server.getToken() != null && !server.getToken().isBlank()) {
+            spec = spec.header("Authorization", "Bearer " + server.getToken());
+        }
+
+        return spec.bodyValue(request)
                 .retrieve()
                 .bodyToMono(Mcp.Response.class)
                 .timeout(TIMEOUT);
