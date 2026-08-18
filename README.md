@@ -47,6 +47,7 @@ Toolgate is the missing mechanism.
 | **Audit log** | "What did the gateway decide, and on what evidence?" |
 | **Namespacing** | Tool-name collisions across servers, which the spec warns proxies must handle. |
 | **Caller authentication** | An agent asserting whatever identity it likes. Bearer tokens, scopes, OAuth-shaped challenges. |
+| **Durable pins** | The trust store evaporating on restart and silently re-approving everything. |
 
 ### Where the filtering happens
 
@@ -107,6 +108,26 @@ Each upstream therefore gets its own credential from configuration, or none at a
 is no code path that copies an inbound `Authorization` header — `UpstreamClient.send` does
 not take one, so passthrough is impossible rather than merely discouraged.
 
+## The pin file is a trust store
+
+Pins live in `~/.toolgate/pins.json` by default. That file records which tool definitions
+were approved, so it deserves the same care as an SSH private key:
+
+- Written **owner-only**, and a group- or world-writable file **aborts startup**. Write
+  access to it is the ability to pre-approve a poisoned tool, which is a more direct route
+  to compromise than any attack the gateway defends against.
+- Writes are **atomic** — temp file, flushed to disk, then renamed into place. A crash
+  mid-write leaves the old complete file or the new one, never a truncated trust store.
+- A file that exists but cannot be parsed, or carries an unknown schema version,
+  **aborts startup**. Shrugging and starting empty would re-trust every tool on the next
+  `tools/list`, which is precisely what an attacker wants from a corrupted file.
+
+It is deliberately plain JSON, sorted and indented: reviewing which definitions are
+trusted, diffing that set, and committing an approved baseline to version control are all
+things a human needs to be able to do. That is also why it is not SQLite — an opaque file
+obstructs every one of those workflows, and would add a per-platform native library to
+something desktop clients launch as a subprocess.
+
 ## Honest limitations
 
 Worth stating plainly, because a security tool that oversells itself is worse than none:
@@ -117,9 +138,9 @@ Worth stating plainly, because a security tool that oversells itself is worse th
 - **Pattern matching loses on its own.** The injection scanner catches the unsophisticated
   majority. An attacker who knows the rules can phrase around them. It scores rather than
   blocks, and exists as defence in depth — not as an oracle.
-- **In-memory state.** Pins, approvals and the audit log do not survive a restart. This is
-  the most consequential gap: every restart re-pins every tool, so the poisoning defence
-  quietly degrades to nothing until something is seen twice. Durable storage is next.
+- **Approvals and the audit log are still in memory.** Pins now persist; these do not. A
+  restart forgets outstanding approvals and the decision history. The audit trail in
+  particular belongs on a durable append-only sink the gateway cannot rewrite.
 - **The operator API is unauthenticated.** It is on a separate path from `/mcp` so an agent
   cannot reach it through the protocol, but anything that can reach the port can approve
   its own calls. Bind it to localhost or put it behind your own auth until this is fixed.
@@ -238,6 +259,10 @@ poisoned tool *output*, protocol-version rejection, and fingerprint canonicalisa
 Authentication is covered separately: missing and unrecognised tokens, insufficient scope,
 case-insensitive scheme handling, the metadata document, and a spoofed caller header being
 ignored in favour of the token subject.
+
+Persistence has its own suite: drift still detected after a restart, a corrupt file and an
+unknown schema version both aborting startup rather than starting empty, a world-writable
+file refused, and saved files written owner-only.
 
 The stdio binding is tested against **real subprocesses**, because the failures it invites
 are all in the framing: a message split across lines, responses arriving out of order and

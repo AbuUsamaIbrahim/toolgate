@@ -1,6 +1,7 @@
 package dev.mahadi.toolgate;
 
 import dev.mahadi.toolgate.integrity.ToolFingerprint;
+import dev.mahadi.toolgate.integrity.InMemoryPinStorage;
 import dev.mahadi.toolgate.integrity.ToolPinStore;
 import dev.mahadi.toolgate.policy.PolicyEngine;
 import dev.mahadi.toolgate.policy.ToolPolicyProperties;
@@ -43,7 +44,7 @@ class AttackSimulationTest {
         server.setRequireApproval(Set.of("write_file"));
         props.setServers(new LinkedHashMap<>(Map.of(SERVER, server)));
 
-        pins = new ToolPinStore();
+        pins = new ToolPinStore(new InMemoryPinStorage());
         policy = new PolicyEngine(props, pins, new InjectionScanner());
     }
 

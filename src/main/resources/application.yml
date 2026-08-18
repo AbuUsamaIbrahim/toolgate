@@ -43,15 +43,32 @@ toolgate:
           - tools:read
           - tools:call
 
+  # -------------------------------------------------------------------------
+  # Pin storage. This file is the gateway's trust store: it records which tool
+  # definitions were approved. Without it, every restart re-pins everything and
+  # the poisoning defence silently stops enforcing.
+  #
+  # Treat it like an SSH key. It is written owner-only, and a group- or
+  # world-writable file aborts startup — anyone who can write it can pre-approve
+  # a poisoned tool.
+  # -------------------------------------------------------------------------
+  pins:
+    file: ~/.toolgate/pins.json
+    require-secure-permissions: true
+
   block-threshold: 50
   approve-first-sighting: false
-  servers:
-    files:
-      url: http://localhost:9001
-      allow:
-        - read_file
-        - write_file
-      require-approval:
-        - write_file
-      # token: the gateway's OWN credential for this upstream, if it needs one.
-      # Never the caller's token — see UpstreamClient for why.
+  # Upstreams. None by default — configure your own. An upstream is reached either
+  # by `command` (a stdio subprocess) or `url` (Streamable HTTP), never both.
+  #
+  # servers:
+  #   files:                    # ids must not contain underscores
+  #     command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+  #     allow: [read_file, write_file]
+  #     require-approval: [write_file]
+  #
+  #   internal:
+  #     url: http://localhost:9001
+  #     token: ${INTERNAL_TOKEN}   # the gateway's own credential, never the caller's
+  #     allow: [query]
+  servers: {}

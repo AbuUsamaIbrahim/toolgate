@@ -1,6 +1,7 @@
 package dev.mahadi.toolgate.integrity;
 
 import dev.mahadi.toolgate.protocol.Mcp;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -24,6 +25,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * becomes the trusted baseline. TOFU buys detection of <em>change</em>, not proof of
  * <em>goodness</em>. The mitigation is to seed pins from a reviewed manifest in
  * environments where that matters — see {@link #pin(String, Mcp.Tool)}.
+ *
+ * <p>Pins are held in memory for lookup and written through to {@link PinStorage} on every
+ * change. Without persistence the control is theatre: each restart makes every tool a
+ * first sighting, so a poisoned definition introduced across a restart boundary is simply
+ * adopted as the new baseline.
  */
 @Component
 public class ToolPinStore {
@@ -32,6 +38,24 @@ public class ToolPinStore {
 
     /** Key is {@code serverId/toolName}; tool names are only unique within a server. */
     private final Map<String, Pin> pins = new ConcurrentHashMap<>();
+
+    private final PinStorage storage;
+
+    public ToolPinStore(PinStorage storage) {
+        this.storage = storage;
+    }
+
+    /**
+     * Loads persisted pins at startup.
+     *
+     * <p>A failure here is deliberately allowed to abort startup. Continuing with an empty
+     * trust store after failing to read the real one would re-trust every tool, which is
+     * the outcome the pin file exists to prevent.
+     */
+    @PostConstruct
+    void restore() {
+        pins.putAll(storage.load());
+    }
 
     public record Pin(String serverId, String toolName, String fingerprint, Instant pinnedAt) {}
 
@@ -61,6 +85,7 @@ public class ToolPinStore {
         if (existing == null) {
             Pin created = new Pin(serverId, tool.name(), actual, Instant.now());
             pins.put(key, created);
+            persist();
             log.info("Pinned new tool {} fingerprint={}", key, shortHash(actual));
             return new Verdict.FirstSighting(created);
         }
@@ -76,7 +101,24 @@ public class ToolPinStore {
     public Pin pin(String serverId, Mcp.Tool tool) {
         Pin p = new Pin(serverId, tool.name(), ToolFingerprint.of(tool), Instant.now());
         pins.put(key(serverId, tool.name()), p);
+        persist();
         return p;
+    }
+
+    /**
+     * Writes the current set through to storage.
+     *
+     * <p>A persistence failure is logged rather than thrown. The in-memory pin is already
+     * correct and still enforcing; refusing the request would turn a disk problem into an
+     * outage. The log line is the operator's signal that restarts are no longer safe.
+     */
+    private void persist() {
+        try {
+            storage.save(pins);
+        } catch (Exception e) {
+            log.error("Failed to persist pins — enforcement continues in memory, but a "
+                    + "restart will lose this state: {}", e.toString());
+        }
     }
 
     /** Accepts a drifted definition as the new baseline. Deliberate operator action only. */
