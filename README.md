@@ -191,6 +191,30 @@ break servers that annotate sensibly; ignoring it lets a hostile one mark its pa
 mandatory. Clamping keeps the hint and removes the demand, and the clamp is recorded in the
 audit trail. A centrally reviewed resource keeps the priority a human approved.
 
+### Definitions are pinned, so escalation is caught
+
+The annotation clamp stops a resource arriving with `priority: 1.0`. It does nothing about
+the patient version: behave for a fortnight, then quietly promote yourself. A resource
+approved as *"Project notes, priority 0.2"* can be re-advertised as *"Project notes,
+priority 1.0, audience assistant"* — same URI, same name, entirely different claim on the
+model's attention.
+
+Resource and prompt definitions are therefore fingerprinted and pinned exactly as tools
+are, and a changed fingerprint is refused rather than adopted. The fingerprint covers
+`annotations` precisely because that is where a quiet escalation would live, and prompt
+`arguments` because a new argument appearing after approval changes what the prompt will do.
+
+Pins for these surfaces live in their own file — different shapes deserve different records
+— but they write through the same `SecureJsonFile` as the tool pins, so the atomic write,
+the fsync, the owner-only permissions and the refusal to load a group-writable file are one
+implementation. Two copies of that is how one of them quietly stops fsyncing.
+
+Fingerprints for resources and prompts carry a `kind` tag that tool fingerprints do not.
+That is domain separation: without it, a resource and a tool whose fields coincided would
+hash identically and a pin for one would satisfy the other. It is absent from the tool
+fingerprint deliberately — adding it would change every hash already written to a pin file
+or published in a bundle's reviewed list, turning a tidy-up into a fleet-wide re-approval.
+
 ### Reads are routed, not forwarded
 
 Tool names are namespaced on the way out, so a call carries its own routing. A resource is

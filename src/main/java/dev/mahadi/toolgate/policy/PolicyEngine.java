@@ -3,6 +3,7 @@ package dev.mahadi.toolgate.policy;
 import dev.mahadi.toolgate.auth.AccessToken;
 import dev.mahadi.toolgate.integrity.DriftStore;
 import dev.mahadi.toolgate.integrity.ToolFingerprint;
+import dev.mahadi.toolgate.integrity.SurfacePinStore;
 import dev.mahadi.toolgate.integrity.ToolPinStore;
 import dev.mahadi.toolgate.protocol.HeaderMirror;
 import dev.mahadi.toolgate.protocol.Mcp;
@@ -38,9 +39,12 @@ public class PolicyEngine {
     private final ToolPinStore pins;
     private final InjectionScanner scanner;
     private final DriftStore drifts;
+    private final SurfacePinStore surfacePins;
 
     public PolicyEngine(EffectivePolicy props, ToolPinStore pins,
-                        InjectionScanner scanner, DriftStore drifts) {
+                        InjectionScanner scanner, DriftStore drifts,
+                        SurfacePinStore surfacePins) {
+        this.surfacePins = surfacePins;
         this.props = props;
         this.pins = pins;
         this.scanner = scanner;
@@ -222,6 +226,18 @@ public class PolicyEngine {
             return new Decision.Deny(uriVerdict.reason(), uriVerdict.evidence());
         }
 
+        // Integrity, in the same position it occupies for tools: after the cheap
+        // non-heuristic checks, before the heuristic ones.
+        var verdict = surfacePins.check(serverId, resource);
+        if (verdict instanceof SurfacePinStore.Verdict.Drifted d) {
+            return new Decision.Deny(
+                    "resource definition changed since it was pinned",
+                    List.of("pinned=" + abbreviate(d.pin().fingerprint()),
+                            "actual=" + abbreviate(d.actualFingerprint()),
+                            "pinnedAt=" + d.pin().pinnedAt()));
+        }
+        boolean firstSighting = verdict instanceof SurfacePinStore.Verdict.FirstSighting;
+
         // Metadata is model-visible, so it gets the same scan a tool definition gets.
         var scan = scanner.scan(resource.name(), resource.title(), resource.description());
         if (!scan.clean()) {
@@ -229,6 +245,11 @@ public class PolicyEngine {
             scan.findings().forEach(f ->
                     evidence.add("%s in %s: %s".formatted(f.rule(), f.field(), f.evidence())));
             if (scan.score() >= props.blockThreshold()) {
+                // Do not leave a pin behind for a definition we refused, or the upstream's
+                // eventual fix arrives as drift and waits for a human to approve a repair.
+                if (firstSighting) {
+                    surfacePins.forget(SurfacePinStore.Kind.RESOURCE, serverId, resource.uri());
+                }
                 return new Decision.Deny(
                         "resource metadata contains adversarial content (score %d)"
                                 .formatted(scan.score()), List.copyOf(evidence));
@@ -236,7 +257,7 @@ public class PolicyEngine {
             return new Decision.NeedsApproval(
                     "resource metadata is suspicious (score %d): %s".formatted(scan.score(), evidence));
         }
-        return new Decision.Allow("allowlisted, scheme permitted and clean");
+        return new Decision.Allow("allowlisted, scheme permitted, pinned and clean");
     }
 
     /**
@@ -256,12 +277,25 @@ public class PolicyEngine {
                     List.of("%s/%s".formatted(serverId, prompt.name())));
         }
 
+        var verdict = surfacePins.check(serverId, prompt);
+        if (verdict instanceof SurfacePinStore.Verdict.Drifted d) {
+            return new Decision.Deny(
+                    "prompt definition changed since it was pinned",
+                    List.of("pinned=" + abbreviate(d.pin().fingerprint()),
+                            "actual=" + abbreviate(d.actualFingerprint()),
+                            "pinnedAt=" + d.pin().pinnedAt()));
+        }
+        boolean firstSighting = verdict instanceof SurfacePinStore.Verdict.FirstSighting;
+
         var scan = scanner.scan(prompt.name(), prompt.title(), prompt.description());
         if (!scan.clean()) {
             List<String> evidence = new ArrayList<>();
             scan.findings().forEach(f ->
                     evidence.add("%s in %s: %s".formatted(f.rule(), f.field(), f.evidence())));
             if (scan.score() >= props.blockThreshold()) {
+                if (firstSighting) {
+                    surfacePins.forget(SurfacePinStore.Kind.PROMPT, serverId, prompt.name());
+                }
                 return new Decision.Deny(
                         "prompt metadata contains adversarial content (score %d)"
                                 .formatted(scan.score()), List.copyOf(evidence));
@@ -269,7 +303,7 @@ public class PolicyEngine {
             return new Decision.NeedsApproval(
                     "prompt metadata is suspicious (score %d): %s".formatted(scan.score(), evidence));
         }
-        return new Decision.Allow("allowlisted and clean");
+        return new Decision.Allow("allowlisted, pinned and clean");
     }
 
     /**

@@ -26,6 +26,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class HeaderMirrorTest {
 
+    /** Pins held in memory only, so a test run never touches the real trust store. */
+    static dev.mahadi.toolgate.integrity.SurfacePinStore memoryPins() {
+        var pinProps = new dev.mahadi.toolgate.integrity.PinProperties();
+        pinProps.setFile("");
+        return new dev.mahadi.toolgate.integrity.SurfacePinStore(
+                pinProps, new com.fasterxml.jackson.databind.ObjectMapper());
+    }
+
     /** A caller with no team membership: the base policy, and nothing extra. */
     static final dev.mahadi.toolgate.auth.AccessToken ANYONE =
             new dev.mahadi.toolgate.auth.AccessToken(
@@ -46,7 +54,7 @@ class HeaderMirrorTest {
         props.setServers(new LinkedHashMap<>(Map.of(SERVER, server)));
 
         pins = new ToolPinStore(new InMemoryPinStorage());
-        policy = new PolicyEngine(localPolicy(props), pins, new InjectionScanner(), new DriftStore());
+        policy = new PolicyEngine(localPolicy(props), pins, new InjectionScanner(), new DriftStore(), memoryPins());
     }
 
     /** A tool whose {@code path} parameter asks to be mirrored into {@code header}. */

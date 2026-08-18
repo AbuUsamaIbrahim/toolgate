@@ -34,6 +34,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class CentralPolicyTest {
 
+    /** Pins held in memory only, so a test run never touches the real trust store. */
+    static dev.mahadi.toolgate.integrity.SurfacePinStore memoryPins() {
+        var pinProps = new dev.mahadi.toolgate.integrity.PinProperties();
+        pinProps.setFile("");
+        return new dev.mahadi.toolgate.integrity.SurfacePinStore(
+                pinProps, new com.fasterxml.jackson.databind.ObjectMapper());
+    }
+
     /** A caller with no team membership: the base policy, and nothing extra. */
     static final dev.mahadi.toolgate.auth.AccessToken ANYONE =
             new dev.mahadi.toolgate.auth.AccessToken(
@@ -79,7 +87,7 @@ class CentralPolicyTest {
         var effective = new EffectivePolicy(permissiveLocal(), store);
         var pins = new ToolPinStore(new InMemoryPinStorage());
         return new Harness(
-                new PolicyEngine(effective, pins, new InjectionScanner(), new DriftStore()),
+                new PolicyEngine(effective, pins, new InjectionScanner(), new DriftStore(), memoryPins()),
                 pins, effective);
     }
 

@@ -42,6 +42,43 @@ public final class ToolFingerprint {
     private ToolFingerprint() {}
 
     /** SHA-256 over the canonical form, hex-encoded. */
+    /**
+     * Fingerprints a resource definition.
+     *
+     * <p>Note the {@code kind} tag, which tool fingerprints do not carry. It is domain
+     * separation — without it a resource and a tool whose fields happened to coincide would
+     * hash identically, and a pin for one would silently satisfy the other. It is absent
+     * from {@link #of(Mcp.Tool)} deliberately: adding it there would change every
+     * fingerprint already written to a pin file or published in a bundle's reviewed list,
+     * turning a defensive tidy-up into a fleet-wide re-approval. The asymmetry is ugly and
+     * the alternative is worse.
+     *
+     * <p>{@code annotations} is included because that is where {@code audience} and
+     * {@code priority} live — the fields a server would escalate quietly after approval.
+     */
+    public static String of(Mcp.Resource resource) {
+        StringBuilder sb = new StringBuilder();
+        appendField(sb, "kind", "resource");
+        appendField(sb, "uri", resource.uri());
+        appendField(sb, "name", resource.name());
+        appendField(sb, "title", resource.title());
+        appendField(sb, "description", resource.description());
+        appendField(sb, "mimeType", resource.mimeType());
+        appendField(sb, "annotations", resource.annotations());
+        return sha256(sb.toString());
+    }
+
+    /** Fingerprints a prompt definition, including its argument list. */
+    public static String of(Mcp.Prompt prompt) {
+        StringBuilder sb = new StringBuilder();
+        appendField(sb, "kind", "prompt");
+        appendField(sb, "name", prompt.name());
+        appendField(sb, "title", prompt.title());
+        appendField(sb, "description", prompt.description());
+        appendField(sb, "arguments", prompt.arguments());
+        return sha256(sb.toString());
+    }
+
     public static String of(Mcp.Tool tool) {
         StringBuilder sb = new StringBuilder();
         appendField(sb, "name", tool.name());
