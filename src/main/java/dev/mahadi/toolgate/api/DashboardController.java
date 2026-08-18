@@ -37,6 +37,12 @@ import static dev.mahadi.toolgate.api.DashboardRenderer.*;
 @RestController
 public class DashboardController {
 
+    /**
+     * How often the console reloads itself. Only this page opts in — see
+     * {@link DashboardRenderer#page(String, String, int)} for why that matters.
+     */
+    private static final int REFRESH_SECONDS = 15;
+
     private final AuditLog audit;
     private final DriftStore drifts;
     private final ApprovalStore approvals;
@@ -94,7 +100,7 @@ public class DashboardController {
                                 + "frame-ancestors 'none'; base-uri 'none'")
                 .header("X-Content-Type-Options", "nosniff")
                 .header("Referrer-Policy", "no-referrer")
-                .body(page("Dashboard", b.toString()));
+                .body(page("Dashboard", b.toString(), REFRESH_SECONDS));
     }
 
     private String status() {

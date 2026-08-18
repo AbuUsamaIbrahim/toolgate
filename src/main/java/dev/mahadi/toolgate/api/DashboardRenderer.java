@@ -95,14 +95,33 @@ public final class DashboardRenderer {
      * is making an argument it would not accept from anyone else.
      */
     public static String page(String title, String body) {
+        return page(title, body, 0);
+    }
+
+    /**
+     * The page shell, with an optional auto-refresh.
+     *
+     * <p>Refreshing defaults to off, and pages opt in. It used to be unconditional, which
+     * was fine for the dashboard and quietly broken everywhere else: the sign-in form
+     * inherited it too, so the browser reloaded the page — and discarded the half-typed
+     * token — every fifteen seconds. Anyone typing a credential by hand, or waiting on a
+     * password manager, lost it mid-entry. A console that reloads while you are
+     * authenticating to it is not a console you can get into.
+     *
+     * <p>Only a browser could find that. Every test and every {@code curl} fetched the page
+     * once and read the markup, which is exactly the usage a meta refresh does not affect.
+     */
+    public static String page(String title, String body, int refreshSeconds) {
+        String refresh = refreshSeconds > 0
+                ? "<meta http-equiv=\"refresh\" content=\"" + refreshSeconds + "\">\n"
+                : "";
         return """
             <!doctype html><html lang="en"><head><meta charset="utf-8">
             <meta name="viewport" content="width=device-width,initial-scale=1">
             <title>%s — toolgate</title>
-            <meta http-equiv="refresh" content="15">
-            <style>%s</style>
+            %s<style>%s</style>
             </head><body><div class="wrap">%s</div></body></html>
-            """.formatted(escape(title), CSS, body);
+            """.formatted(escape(title), refresh, CSS, body);
     }
 
     private static final String CSS = """
