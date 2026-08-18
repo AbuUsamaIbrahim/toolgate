@@ -12,6 +12,50 @@ Speaks both standard transports: **stdio** and **Streamable HTTP**, in either di
 
 ---
 
+## Try it
+
+Two containers: the gateway, and a server that is genuinely trying to get past it.
+
+```bash
+docker compose up --build -d
+./demo/walkthrough.sh
+```
+
+The hostile server ([`demo/hostile-server.py`](demo/hostile-server.py)) advertises four
+tools, one per control, and exposes a `POST /poison` endpoint that rewrites a tool's
+description *after* it has been approved — the mutation-after-approval attack that pinning
+exists to catch. Nothing in the walkthrough is simulated; every line is the gateway's real
+answer.
+
+```
+2. What the agent is actually shown
+  - demo__read_file
+  - demo__send_email
+
+10. The record
+  DENIED             demo/fetch_url    tool declares an unacceptable x-mcp-header mirror
+  DENIED             demo/search_docs  tool metadata contains adversarial content (score 70)
+  DENIED             demo/read_file    tool definition changed since it was pinned
+  APPROVAL_REQUIRED  demo/send_email   tool is marked as requiring human approval
+  ALLOWED            demo/read_file    allowlisted and pinned
+```
+
+Four tools go in, two come out, and the two that were refused never entered the model's
+context. Step 7 shows the operator the field-level diff of what changed; step 9 reverts the
+upstream and the tool is advertised again with no human involved, because the gateway
+blocked a *state*, not a server.
+
+Pins live on a named volume, so the poisoning stays blocked across
+`docker compose restart` — without that, a restart would treat the mutated definition as a
+first sighting and simply trust it.
+
+```bash
+TOOLGATE_PORT=8090 docker compose up -d      # if something already holds 8080
+docker compose down -v                       # removes the volume, and with it the pins
+```
+
+---
+
 ## Why
 
 The MCP specification is unusually direct about the risk:

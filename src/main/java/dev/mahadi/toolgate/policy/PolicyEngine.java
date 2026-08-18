@@ -91,7 +91,7 @@ public class PolicyEngine {
         // weigh up and no reason to escalate rather than deny.
         var headerProblems = HeaderMirror.validate(tool);
         if (!headerProblems.isEmpty()) {
-            return new Decision.Deny(
+            return refuse(serverId, tool, firstSighting,
                     "tool declares an unacceptable x-mcp-header mirror",
                     List.copyOf(headerProblems));
         }
@@ -104,7 +104,7 @@ public class PolicyEngine {
                     evidence.add("%s in %s: %s".formatted(f.rule(), f.field(), f.evidence())));
 
             if (scan.score() >= props.getBlockThreshold()) {
-                return new Decision.Deny(
+                return refuse(serverId, tool, firstSighting,
                         "tool metadata contains adversarial content (score %d)".formatted(scan.score()),
                         List.copyOf(evidence));
             }
@@ -162,6 +162,23 @@ public class PolicyEngine {
                 .map(ToolPinStore.Pin::definition)
                 .map(def -> HeaderMirror.headersFor(def, arguments))
                 .orElse(java.util.Map.of());
+    }
+
+    /**
+     * Denies a tool, and drops the pin if this sighting is what created it.
+     *
+     * <p>The integrity check runs before the content and header checks — deliberately,
+     * because it is the one control that is not a heuristic — and it pins whatever it sees
+     * for the first time. Leaving that pin behind for a definition the gateway then
+     * refused would mean the upstream's eventual fix arrives as drift, and a server
+     * repairing itself would sit blocked waiting for a human to approve the repair.
+     */
+    private Decision refuse(String serverId, Mcp.Tool tool, boolean firstSighting,
+                            String reason, List<String> evidence) {
+        if (firstSighting) {
+            pins.forget(serverId, tool.name());
+        }
+        return new Decision.Deny(reason, evidence);
     }
 
     private static String abbreviate(String hash) {

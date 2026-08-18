@@ -136,6 +136,21 @@ public class ToolPinStore {
         return pin(serverId, tool);
     }
 
+    /**
+     * Discards a pin.
+     *
+     * <p>Used when a definition is pinned on first sighting and then refused by a later
+     * check. A pin is meant to record the definition <em>in force</em>; keeping one for a
+     * tool the gateway never advertised has an unpleasant consequence — when the upstream
+     * fixes the poisoned description, the repair reads as drift and stays blocked until a
+     * human accepts it. Remediation should not need permission.
+     */
+    public void forget(String serverId, String toolName) {
+        if (pins.remove(key(serverId, toolName)) != null) {
+            persist();
+        }
+    }
+
     public Optional<Pin> get(String serverId, String toolName) {
         return Optional.ofNullable(pins.get(key(serverId, toolName)));
     }

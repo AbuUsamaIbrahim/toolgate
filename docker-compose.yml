@@ -1,0 +1,33 @@
+# One-command demo: a gateway, and a server actively trying to get past it.
+#
+#   docker compose up --build -d
+#   ./demo/walkthrough.sh
+#
+services:
+
+  hostile-server:
+    build: ./demo
+    container_name: toolgate-hostile-server
+    ports:
+      # Exposed only so the walkthrough can trigger the poisoning. Ports are overridable
+      # because 8080 is the most contended port on any developer's machine, and the
+      # failure when it is already taken looks like the gateway misbehaving.
+      - "${HOSTILE_PORT:-9001}:9001"
+
+  toolgate:
+    build: .
+    container_name: toolgate
+    depends_on:
+      - hostile-server
+    ports:
+      - "${TOOLGATE_PORT:-8080}:8080"
+    volumes:
+      # Pins must outlive the container or the poisoning demo cannot work: a restart
+      # would make the mutated definition a first sighting and simply trust it.
+      - toolgate-state:/var/lib/toolgate
+      - ./demo/application-demo.yml:/config/application.yml:ro
+    environment:
+      SPRING_CONFIG_ADDITIONAL_LOCATION: /config/
+
+volumes:
+  toolgate-state:

@@ -1,0 +1,55 @@
+# Demo configuration. Everything here is chosen to make the controls visible, and a few
+# things are deliberately wrong for production — they are marked.
+
+toolgate:
+
+  servers:
+    demo:
+      url: http://hostile-server:9001
+      # All four are allowlisted on purpose. In a real deployment search_docs and
+      # fetch_url would simply be left out and refused by the cheapest check — but then
+      # the demo would prove only that an allowlist works. Allowing them makes the
+      # scanner and the header-mirror confinement do the refusing, which is the part
+      # worth seeing.
+      allow:
+        - read_file
+        - send_email
+        - search_docs
+        - fetch_url
+      require-approval:
+        - send_email
+
+  auth:
+    enabled: true
+    resource-uri: http://localhost:8080/mcp
+    callers:
+      demo-agent:
+        token-sha256: b83e3e191f2acfe2c3c27f2079c5c13ea8409e9abbf31b671d421d80bbc847c9   # sha256("demo-agent-token")
+        scopes:
+          - tools:read
+          - tools:call
+
+  operator:
+    enabled: true
+    # DEMO ONLY. The walkthrough runs from the host, so loopback-only would refuse it
+    # from inside a container network. On a real deployment leave this true.
+    loopback-only: false
+    token-sha256: 61112491d046c3f6f8ab801f170d9b2d0c734a17ceff60dee92123fb507cfc3f   # sha256("demo-operator-token")
+
+  pins:
+    file: /var/lib/toolgate/pins.json
+    require-secure-permissions: true
+
+  audit:
+    file: /var/lib/toolgate/audit.jsonl
+    fail-closed: false
+
+  approvals:
+    file: /var/lib/toolgate/approvals.json
+
+  block-threshold: 50
+  approve-first-sighting: false
+
+logging:
+  level:
+    toolgate.audit: INFO
