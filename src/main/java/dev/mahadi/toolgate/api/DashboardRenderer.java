@@ -148,5 +148,17 @@ public final class DashboardRenderer {
              display:inline-block;margin-top:8px;word-break:break-all}
         .empty{color:var(--faint);font-size:13px;padding:6px 0}
         .note{color:var(--faint);font-size:11.5px;margin-top:10px;line-height:1.6}
+        button{font:600 12px system-ui;padding:6px 12px;border-radius:6px;cursor:pointer;
+               background:var(--accent);color:#04121c;border:0;margin-right:6px}
+        button:hover{filter:brightness(1.12)}
+        button.danger{background:transparent;color:var(--bad);border:1px solid var(--bad)}
+        button.link{background:none;border:0;color:var(--faint);padding:0;font-weight:400;
+                    text-decoration:underline;font-size:12px}
+        form.inline{display:inline-flex;align-items:center;gap:0;margin:0}
+        input.who{background:#0d1117;border:1px solid var(--line);border-radius:6px;
+                  color:var(--ink);padding:5px 8px;margin-right:6px;width:150px;
+                  font:12px ui-monospace,Menlo,monospace}
+        label.k{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--faint)}
+        .bad{color:var(--bad)}
         """;
 }

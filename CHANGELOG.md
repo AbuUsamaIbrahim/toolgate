@@ -59,6 +59,12 @@ standard transports, in both directions.
   operator API. Read-only; renders the drift diff, the approval queue and recent refusals.
 
 ### Also fixed
+- **`/slack/interactions` returned 415 to every real request.** WebFlux's form reader claims
+  `application/x-www-form-urlencoded` and decodes to a `MultiValueMap`, so the `byte[]`
+  parameter was rejected before the method was entered. Every unit test passed because they
+  called the controller directly and never crossed the HTTP layer. The body is now read from
+  the exchange, which is also the only way to be sure the bytes verified are the bytes
+  parsed.
 - The operator auth filter guarded `/toolgate/` but not `/toolgate`, so the dashboard was
   reachable without a credential. Both forms are now covered.
 - `/actuator/health/liveness` and `/readiness` returned 404 outside Kubernetes, because

@@ -43,10 +43,12 @@ public class DashboardController {
     private final ToolPinStore pins;
     private final SurfacePinStore surfacePins;
     private final BundleStore bundles;
+    private final OperatorSessions sessions;
 
     public DashboardController(AuditLog audit, DriftStore drifts, ApprovalStore approvals,
                                ToolPinStore pins, SurfacePinStore surfacePins,
-                               BundleStore bundles) {
+                               BundleStore bundles, OperatorSessions sessions) {
+        this.sessions = sessions;
         this.audit = audit;
         this.drifts = drifts;
         this.approvals = approvals;
@@ -56,15 +58,28 @@ public class DashboardController {
     }
 
     @GetMapping(value = "/toolgate", produces = MediaType.TEXT_HTML_VALUE)
-    public ResponseEntity<String> dashboard() {
-        StringBuilder b = new StringBuilder();
+    public ResponseEntity<String> dashboard(org.springframework.web.server.ServerWebExchange exchange) {
+        var cookie = exchange.getRequest().getCookies().get(OperatorSessions.COOKIE);
+        var session = cookie == null || cookie.isEmpty() ? null
+                : sessions.lookup(cookie.get(0).getValue()).orElse(null);
 
+        // Reached with a bearer token rather than a browser session: render it read-only.
+        // The buttons need a CSRF token, and a CSRF token needs a session to be bound to.
+        String csrf = session == null ? null : session.csrfToken();
+
+        StringBuilder b = new StringBuilder();
         b.append("<h1>toolgate</h1><div class=\"sub\">")
-                .append(escape(status())).append(" · refreshes every 15s</div>");
+                .append(escape(status())).append(" · refreshes every 15s");
+        if (session != null) {
+            b.append(" · <form method=\"post\" action=\"/toolgate/logout\" class=\"inline\">")
+                    .append(csrfField(csrf))
+                    .append("<button class=\"link\" type=\"submit\">sign out</button></form>");
+        }
+        b.append("</div>");
 
         b.append(cards());
-        b.append(driftSection());
-        b.append(approvalSection());
+        b.append(driftSection(csrf));
+        b.append(approvalSection(csrf));
         b.append(recentRefusals());
 
         return ResponseEntity.ok()
@@ -72,7 +87,7 @@ public class DashboardController {
                 // for the person holding a token that can approve anything, so the policy
                 // is the belt to the escaping's braces.
                 .header("Content-Security-Policy",
-                        "default-src 'none'; style-src 'unsafe-inline'; form-action 'none'; "
+                        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
                                 + "frame-ancestors 'none'; base-uri 'none'")
                 .header("X-Content-Type-Options", "nosniff")
                 .header("Referrer-Policy", "no-referrer")
@@ -122,7 +137,13 @@ public class DashboardController {
      * in which a human can decide "release or attack", and invisible characters are marked
      * in red because that decision turns on being able to see them.
      */
-    private String driftSection() {
+    /** The token is bound to the session, so a forged form cannot supply a valid one. */
+    private static String csrfField(String csrf) {
+        return csrf == null ? "" : "<input type=\"hidden\" name=\"" + OperatorSessions.CSRF_FIELD
+                + "\" value=\"" + escape(csrf) + "\">";
+    }
+
+    private String driftSection(String csrf) {
         var all = drifts.list();
         StringBuilder b = new StringBuilder("<h2>Definitions that changed after approval</h2>");
         if (all.isEmpty()) {
@@ -137,28 +158,56 @@ public class DashboardController {
                     .append(diff(DriftStore.renderText(d)))
                     .append("<div class=\"note\">Accept only if this reads as a product change. "
                             + "Instructions aimed at the model, unexpected paths, or characters "
-                            + "marked in red are the attack this exists to catch.</div>")
-                    .append("<code>curl -X POST localhost:8080/toolgate/drift/")
-                    .append(escape(d.serverId())).append('/').append(escape(d.toolName()))
-                    .append("/accept -H \"Authorization: Bearer $TOKEN\"</code></div>");
+                            + "marked in red are the attack this exists to catch.</div>");
+            if (csrf != null) {
+                b.append("<form method=\"post\" action=\"/toolgate/ui/drift/accept\">")
+                        .append(csrfField(csrf))
+                        .append("<input type=\"hidden\" name=\"server\" value=\"")
+                        .append(escape(d.serverId())).append("\">")
+                        .append("<input type=\"hidden\" name=\"tool\" value=\"")
+                        .append(escape(d.toolName())).append("\">")
+                        .append("<button type=\"submit\" class=\"danger\">Accept as the new baseline</button>")
+                        .append("</form>");
+            } else {
+                b.append("<code>curl -X POST localhost:8080/toolgate/drift/")
+                        .append(escape(d.serverId())).append('/').append(escape(d.toolName()))
+                        .append("/accept -H \"Authorization: Bearer $TOKEN\"</code>");
+            }
+            b.append("</div>");
         }
         return b.toString();
     }
 
-    private String approvalSection() {
+    private String approvalSection(String csrf) {
         var waiting = approvals.outstanding();
         StringBuilder b = new StringBuilder("<h2>Waiting for a human</h2>");
         if (waiting.isEmpty()) {
             return b.append("<div class=\"empty\">No pending approvals.</div>").toString();
         }
-        b.append("<table><tr><th>Who</th><th>Tool</th><th>Why</th><th>Raised</th></tr>");
-        waiting.values().forEach(p -> b
-                .append("<tr><td class=\"mono\">").append(escape(p.caller()))
-                .append("</td><td class=\"mono\">").append(escape(p.serverId()))
-                .append('/').append(escape(p.tool()))
-                .append("</td><td class=\"dim\">").append(escape(p.reason()))
-                .append("</td><td class=\"dim\">").append(escape(ago(p.createdAt())))
-                .append("</td></tr>"));
+        b.append("<table><tr><th>Who</th><th>Tool</th><th>Why</th><th>Raised</th>")
+                .append(csrf == null ? "" : "<th>Decide</th>").append("</tr>");
+        waiting.values().forEach(p -> {
+            b.append("<tr><td class=\"mono\">").append(escape(p.caller()))
+                    .append("</td><td class=\"mono\">").append(escape(p.serverId()))
+                    .append('/').append(escape(p.tool()))
+                    .append("</td><td class=\"dim\">").append(escape(p.reason()))
+                    .append("</td><td class=\"dim\">").append(escape(ago(p.createdAt())))
+                    .append("</td>");
+            if (csrf != null) {
+                b.append("<td><form method=\"post\" action=\"/toolgate/ui/approval\" class=\"inline\">")
+                        .append(csrfField(csrf))
+                        .append("<input type=\"hidden\" name=\"id\" value=\"")
+                        .append(escape(p.id())).append("\">")
+                        // Typed, not defaulted: an approval must name a person, and the
+                        // requester is refused by the store rather than by this form.
+                        .append("<input name=\"approver\" placeholder=\"you@example.com\" ")
+                        .append("required class=\"who\">")
+                        .append("<button type=\"submit\" name=\"decision\" value=\"approve\">Approve</button>")
+                        .append("<button type=\"submit\" name=\"decision\" value=\"deny\" class=\"danger\">Deny</button>")
+                        .append("</form></td>");
+            }
+            b.append("</tr>");
+        });
         b.append("</table><div class=\"note\">The requester cannot approve their own call. "
                 + "Approving names you in the audit trail.</div>");
         return b.toString();

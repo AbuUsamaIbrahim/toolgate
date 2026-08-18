@@ -8,10 +8,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Mono;
 
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
@@ -52,12 +54,39 @@ public class SlackInteractionController {
         this.mapper = mapper;
     }
 
-    @PostMapping(value = "/slack/interactions",
-            consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
-    public ResponseEntity<?> interaction(
+    /**
+     * Reads the body from the exchange rather than through {@code @RequestBody}.
+     *
+     * <p>Slack posts {@code application/x-www-form-urlencoded}, and WebFlux's form reader
+     * claims that content type and decodes it to a {@code MultiValueMap} — so a
+     * {@code byte[]} parameter is rejected with 415 before this method is ever entered.
+     * This endpoint therefore answered every real Slack request with an error while every
+     * unit test passed, because those tests called the method directly and never crossed
+     * the HTTP layer. Found by curling it.
+     *
+     * <p>Reading the buffer is also the only way to be certain the bytes verified are the
+     * bytes parsed. A signature over a re-serialised form is a signature over something
+     * else.
+     */
+    @PostMapping("/slack/interactions")
+    public Mono<ResponseEntity<?>> interaction(
             @RequestHeader(value = "X-Slack-Request-Timestamp", required = false) String timestamp,
             @RequestHeader(value = "X-Slack-Signature", required = false) String signature,
-            @RequestBody byte[] rawBody) {
+            ServerWebExchange exchange) {
+
+        return DataBufferUtils.join(exchange.getRequest().getBody())
+                .map(buffer -> {
+                    byte[] bytes = new byte[buffer.readableByteCount()];
+                    buffer.read(bytes);
+                    DataBufferUtils.release(buffer);
+                    return bytes;
+                })
+                .defaultIfEmpty(new byte[0])
+                .map(raw -> interaction(timestamp, signature, raw));
+    }
+
+    /** The decision itself, separated so it can be tested without an HTTP layer. */
+    public ResponseEntity<?> interaction(String timestamp, String signature, byte[] rawBody) {
 
         if (!props.interactionsEnabled()) {
             // No signing secret means no way to tell Slack from anyone else. Refusing is

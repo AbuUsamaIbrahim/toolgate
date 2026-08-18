@@ -41,9 +41,19 @@ public class OperatorAuthFilter implements WebFilter {
     private static final String PREFIX = "/toolgate/";
     private static final String ROOT = "/toolgate";
 
-    private final OperatorProperties props;
+    /**
+     * Paths a browser may reach without a session, because they are how one is obtained.
+     * Deliberately exact matches rather than a prefix: a prefix is what let the dashboard
+     * escape this filter in the first place.
+     */
+    private static final java.util.Set<String> UNAUTHENTICATED =
+            java.util.Set.of("/toolgate/login");
 
-    public OperatorAuthFilter(OperatorProperties props) {
+    private final OperatorProperties props;
+    private final dev.mahadi.toolgate.api.OperatorSessions sessions;
+
+    public OperatorAuthFilter(OperatorProperties props, dev.mahadi.toolgate.api.OperatorSessions sessions) {
+        this.sessions = sessions;
         this.props = props;
     }
 
@@ -51,7 +61,7 @@ public class OperatorAuthFilter implements WebFilter {
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
         String path = exchange.getRequest().getPath().value();
         boolean operatorArea = path.equals(ROOT) || path.startsWith(PREFIX);
-        if (!operatorArea || !props.isEnabled()) {
+        if (!operatorArea || !props.isEnabled() || UNAUTHENTICATED.contains(path)) {
             return chain.filter(exchange);
         }
 
@@ -71,6 +81,17 @@ public class OperatorAuthFilter implements WebFilter {
                     + "operator requests. Set toolgate.operator.token-sha256 or disable it explicitly.");
             return deny(exchange, HttpStatus.UNAUTHORIZED);
         }
+        // A browser session counts, and is checked before the bearer token because that is
+        // how the dashboard arrives. It is still this filter making the decision: the
+        // dashboard has no authentication logic of its own to get wrong.
+        String sessionId = exchange.getRequest().getCookies()
+                .getFirst(dev.mahadi.toolgate.api.OperatorSessions.COOKIE) == null ? null
+                : exchange.getRequest().getCookies()
+                        .getFirst(dev.mahadi.toolgate.api.OperatorSessions.COOKIE).getValue();
+        if (sessions.lookup(sessionId).isPresent()) {
+            return chain.filter(exchange);
+        }
+
         if (presented == null || !constantTimeEquals(sha256(presented), expected.toLowerCase())) {
             return deny(exchange, HttpStatus.UNAUTHORIZED);
         }

@@ -1024,10 +1024,25 @@ are rendered as <code>⟨U+200B⟩</code> in red rather than passed through, whi
 defence but the entire point: a reviewer deciding "release or attack" has to be able to see
 a zero-width space.
 
-It is **read-only**. Acting requires a POST, and a browser form cannot send the bearer
-header the operator API expects, so working buttons would mean a session cookie and CSRF
-protection on the one API that can approve anything. Each item shows the exact command
-instead — which is also what you would paste into a ticket.
+**The buttons work.** Sign in at `/toolgate/login` with the operator token and it is
+exchanged for a session cookie, after which drift can be accepted and approvals decided from
+the page. Reached with a bearer token instead, it renders read-only and shows the equivalent
+`curl` — which is also what you would paste into a ticket.
+
+A cookie travels automatically, which is what makes buttons possible and what makes
+cross-site request forgery possible. On the API that can approve a blocked tool call a
+forged request is not an inconvenience; it is a poisoned definition accepted in the
+operator's name, appearing in the audit as their deliberate decision. So every state change
+is checked twice:
+
+- **`SameSite=Strict`** — the browser will not send the cookie cross-site at all. This is
+  the control that actually stops it.
+- **A CSRF token bound to the session**, in the form body. An attacker can cause a request
+  but cannot read the token to include, because that needs same-origin access.
+
+The cookie is also `HttpOnly`, so an XSS bug would not become session theft, and scoped to
+`Path=/toolgate` so it is never sent to `/mcp` — an agent must not be able to borrow the
+operator's session by being on the same origin.
 
 ### Operator API
 
