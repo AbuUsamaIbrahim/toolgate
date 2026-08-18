@@ -8,6 +8,7 @@ import dev.mahadi.toolgate.policy.ToolPolicyProperties;
 import dev.mahadi.toolgate.protocol.Mcp;
 import dev.mahadi.toolgate.notify.Notifier;
 import dev.mahadi.toolgate.protocol.HeaderMirror;
+import dev.mahadi.toolgate.slack.SlackNotifier;
 import dev.mahadi.toolgate.scanner.InjectionScanner;
 import dev.mahadi.toolgate.upstream.UpstreamClient;
 import org.slf4j.Logger;
@@ -52,12 +53,13 @@ public class GatewayService {
     private final ApprovalStore approvals;
     private final AuditLog audit;
     private final Notifier notifier;
+    private final SlackNotifier slack;
     private final ObjectMapper mapper;
 
     public GatewayService(ToolPolicyProperties props, PolicyEngine policy,
                           UpstreamClient upstream, InjectionScanner scanner,
                           ApprovalStore approvals, AuditLog audit,
-                          Notifier notifier, ObjectMapper mapper) {
+                          Notifier notifier, SlackNotifier slack, ObjectMapper mapper) {
         this.props = props;
         this.policy = policy;
         this.upstream = upstream;
@@ -65,6 +67,7 @@ public class GatewayService {
         this.approvals = approvals;
         this.audit = audit;
         this.notifier = notifier;
+        this.slack = slack;
         this.mapper = mapper;
     }
 
@@ -160,6 +163,7 @@ public class GatewayService {
                     notifier.notify(Notifier.Kind.APPROVAL_REQUIRED,
                             "%s/%s is waiting for approval".formatted(serverId, tool.name()),
                             n.reason() + " — approve: POST /toolgate/approvals/" + p.id() + "/approve");
+                    slack.requestApproval(p, n.reason());
                 }
             }
         }
@@ -206,6 +210,7 @@ public class GatewayService {
                 notifier.notify(Notifier.Kind.APPROVAL_REQUIRED,
                         "%s wants to call %s/%s".formatted(caller.subject(), serverId, toolName),
                         n.reason() + " — approve: POST /toolgate/approvals/" + p.id() + "/approve");
+                slack.requestApproval(p, n.reason());
                 return Mono.just(Mcp.Response.error(request.id(), Mcp.Codes.APPROVAL_REQUIRED,
                         "human approval required: " + n.reason(),
                         Map.of("approvalId", p.id())));

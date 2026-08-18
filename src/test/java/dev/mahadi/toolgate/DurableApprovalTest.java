@@ -55,7 +55,8 @@ class DurableApprovalTest {
 
         var first = store(file);
         var pending = first.request("agent", "files", "write_file", "needs a human");
-        assertThat(first.approve(pending.id())).isPresent();
+        assertThat(first.approve(pending.id(), "approver@example.com"))
+                .isInstanceOf(ApprovalStore.Outcome.Granted.class);
 
         // Still redeemable in the process where it was granted...
         var second = store(file);
@@ -71,7 +72,7 @@ class DurableApprovalTest {
 
         var first = store(file);
         var pending = first.request("agent", "files", "write_file", "needs a human");
-        first.approve(pending.id());
+        first.approve(pending.id(), "approver@example.com");
 
         assertThat(store(file).outstanding()).isEmpty();
     }
@@ -83,7 +84,7 @@ class DurableApprovalTest {
 
         var first = store(file);
         var pending = first.request("agent", "files", "write_file", "needs a human");
-        first.deny(pending.id());
+        first.deny(pending.id(), "approver@example.com");
 
         assertThat(store(file).outstanding()).isEmpty();
     }

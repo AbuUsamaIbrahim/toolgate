@@ -218,23 +218,61 @@ public class GatewayController {
         return approvals.outstanding();
     }
 
+    /**
+     * Approves a blocked call from the operator API.
+     *
+     * <p>{@code approver} is required and cannot be verified here: the operator API is
+     * guarded by a shared token, which identifies a deployment rather than a person. So it
+     * is recorded as <em>asserted</em>, and the audit line says so. That is not a
+     * satisfying answer, and it is why the Slack path exists — there the approver is
+     * whoever Slack says clicked the button, on a request the gateway has cryptographically
+     * verified came from Slack.
+     *
+     * <p>It is still required rather than optional. Forcing whoever runs the curl to type a
+     * name makes the gap visible at the moment of use, instead of producing a tidy audit
+     * line that quietly means nobody.
+     */
     @PostMapping("/toolgate/approvals/{id}/approve")
-    public ResponseEntity<?> approve(@PathVariable String id) {
-        return approvals.approve(id)
-                .<ResponseEntity<?>>map(p -> {
-                    audit.record(p.caller(), p.serverId(), p.tool(), "approval",
-                            AuditLog.Outcome.APPROVED, "granted by operator", List.of("id=" + id));
-                    return ResponseEntity.ok(Map.of("approved", true, "tool", p.tool()));
-                })
-                .orElseGet(() -> ResponseEntity.notFound().build());
+    public ResponseEntity<?> approve(@PathVariable String id,
+                                     @RequestParam(required = false) String approver) {
+        if (approver == null || approver.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "approver is required",
+                    "hint", "POST /toolgate/approvals/" + id + "/approve?approver=you@example.com"));
+        }
+
+        return switch (approvals.approve(id, approver)) {
+            case ApprovalStore.Outcome.Granted g -> {
+                audit.record(g.request().caller(), g.request().serverId(), g.request().tool(),
+                        "approval", AuditLog.Outcome.APPROVED,
+                        "granted by " + g.approver(),
+                        List.of("id=" + id, "approver=" + g.approver(), "approverSource=asserted"));
+                yield ResponseEntity.ok(Map.of("approved", true, "tool", g.request().tool(),
+                        "approver", g.approver()));
+            }
+            case ApprovalStore.Outcome.SelfApproval self -> {
+                audit.record(self.request().caller(), self.request().serverId(),
+                        self.request().tool(), "approval", AuditLog.Outcome.DENIED,
+                        "refused: requester cannot approve their own call",
+                        List.of("id=" + id, "approver=" + approver));
+                yield ResponseEntity.status(403).body(Map.of(
+                        "error", "the requester cannot approve their own call",
+                        "requester", self.request().caller()));
+            }
+            case ApprovalStore.Outcome.Unknown ignored ->
+                    ResponseEntity.notFound().build();
+        };
     }
 
     @PostMapping("/toolgate/approvals/{id}/deny")
-    public ResponseEntity<?> deny(@PathVariable String id) {
-        return approvals.deny(id)
+    public ResponseEntity<?> deny(@PathVariable String id,
+                                  @RequestParam(required = false) String approver) {
+        return approvals.deny(id, approver == null ? "operator" : approver)
                 .<ResponseEntity<?>>map(p -> {
                     audit.record(p.caller(), p.serverId(), p.tool(), "approval",
-                            AuditLog.Outcome.DENIED, "denied by operator", List.of("id=" + id));
+                            AuditLog.Outcome.DENIED,
+                            "denied by " + (approver == null ? "operator" : approver),
+                            List.of("id=" + id));
                     return ResponseEntity.ok(Map.of("approved", false));
                 })
                 .orElseGet(() -> ResponseEntity.notFound().build());

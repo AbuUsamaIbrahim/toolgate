@@ -191,6 +191,26 @@ toolgate:
     bundle-file: ""               # server side only
     silent-after: 30m             # generous: a closed lid is not a coverage gap
 
+  # -------------------------------------------------------------------------
+  # Slack approvals. A blocked call posts a message with Approve / Deny
+  # buttons into a channel of the people allowed to decide.
+  #
+  # signing-secret is not optional in spirit: the interaction endpoint has to
+  # be reachable from the internet for buttons to work, and what it does is
+  # approve tool calls. Empty means the endpoint refuses everything, which is
+  # the only safe answer when it cannot tell Slack from anyone else.
+  #
+  # `approvers` maps Slack user ids to gateway identities. Explicit rather
+  # than read from the Slack profile, because profile fields are user-editable
+  # in many workspaces — trusting one would let somebody name themselves as
+  # the person whose request they want to approve.
+  # -------------------------------------------------------------------------
+  slack:
+    bot-token: ""                 # xoxb-… ; empty disables posting
+    channel: ""                   # e.g. "#toolgate-approvals"
+    signing-secret: ""            # empty = /slack/interactions refuses everything
+    approvers: {}                 # U024BE7LH: alice@example.com
+
   block-threshold: 50
   approve-first-sighting: false
   # Upstreams. None by default — configure your own. An upstream is reached either

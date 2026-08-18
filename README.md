@@ -98,6 +98,7 @@ Toolgate is the missing mechanism.
 | **OIDC identity** | Audit lines naming a config entry instead of a person, and credentials that never expire. |
 | **Metrics and OTLP export** | A gateway that answers every request promptly while governing nothing, and nobody notices. |
 | **Fleet check-in** | Nobody knowing which machines are actually enforcing policy, or which quietly stopped. |
+| **Slack approvals** | A human gate that the requester can wave through themselves, granted by nobody in particular. |
 | **Header-mirror confinement** | `x-mcp-header` letting a tool definition write arbitrary HTTP headers. |
 
 ### Where the filtering happens
@@ -500,6 +501,62 @@ which the sequence floor and the staleness deadline on each gateway already boun
 cannot write a new one.
 
 Kubernetes manifests, with the reasoning for each object, are in [`k8s/`](k8s/).
+
+### Approvals with a second person in them
+
+A blocked call posts into Slack with buttons:
+
+```yaml
+toolgate:
+  slack:
+    bot-token: xoxb-…
+    channel: "#toolgate-approvals"
+    signing-secret: …                    # required, see below
+    approvers:
+      U024BE7LH: alice@example.com       # Slack user id -> gateway identity
+```
+
+Three properties, each of which the previous version got wrong:
+
+**The approver is named.** Approvals used to be recorded as "granted by operator", which
+names a shared token. Now every grant carries a person, and the audit line distinguishes
+`approverSource=slack` (Slack signed the request, so it is verified) from
+`approverSource=asserted` (someone typed a name into the operator API, which is guarded by a
+shared token and cannot do better). The operator path still *requires* the name — making the
+gap visible at the moment of use beats a tidy audit line that quietly means nobody.
+
+**The requester cannot approve their own call.** A gate the requester can open measures
+persistence, not agreement. Enforced in `ApprovalStore`, not in any user interface, because
+the interface is not what an attacker uses. A refused self-approval deliberately leaves the
+request in the queue — removing it would let a requester cancel their own pending request by
+trying to approve it.
+
+**A Slack user is not an identity until you say so.** The mapping is explicit configuration.
+Slack profile fields, including email, are editable by the user in many workspaces, so
+deriving the approver from a profile would let somebody set their own approver identity —
+possibly to that of the person whose request they wanted to approve. An unmapped user is
+refused, which also makes "who can approve things here" a list a reviewer can read.
+
+#### Verifying the interaction really came from Slack
+
+`/slack/interactions` has to be reachable from the internet for buttons to work, and what it
+does is approve blocked tool calls. Get the signature check wrong and it is an
+unauthenticated approve-anything API — no Slack account required, just the URL and an
+approval id.
+
+Slack signs `v0:<timestamp>:<raw body>` with HMAC-SHA256. Three details, each a real
+vulnerability if skipped:
+
+- **The raw bytes, not a reparsed form.** The form field is pulled out of the same buffer
+  the signature covered. Verifying one representation and acting on another is what every
+  signature-bypass writeup is about.
+- **The timestamp is checked, in both directions.** It is inside the signed material, so it
+  cannot be edited — but without a freshness window a captured request stays valid forever.
+  Five minutes, and a future timestamp is as suspicious as an old one.
+- **Constant-time comparison**, so a partial match leaks nothing through timing.
+
+An unverified request gets a bare 401 and an audit line. Somebody probing that endpoint is
+worth knowing about.
 
 ### What the distribution layer has to get right
 

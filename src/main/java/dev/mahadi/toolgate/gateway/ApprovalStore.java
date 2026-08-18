@@ -32,6 +32,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * with extra steps, and a reusable one would let a compromised agent replay a human's
  * single "yes" indefinitely.
  *
+ * <p>Approvals name the person who granted them, and a requester cannot approve their own
+ * call — see {@link #approve(String, String)}.
+ *
  * <h2>What survives a restart, and what deliberately does not</h2>
  * Pending <em>requests</em> are written to disk. They represent a decision a human still
  * owes, and losing the queue during a deploy means an operator reviewing a suspicious call
@@ -80,18 +83,64 @@ public class ApprovalStore {
         return p;
     }
 
-    /** Approves a pending request, returning it so the caller can audit what was granted. */
-    public Optional<Pending> approve(String id) {
-        Pending p = pending.remove(id);
-        if (p == null || p.expired()) return Optional.empty();
-        granted.put(grantKey(p.caller(), p.serverId(), p.tool()), Instant.now());
-        persist();
-        return Optional.of(p);
+    /** What happened when someone tried to approve. */
+    public sealed interface Outcome {
+        record Granted(Pending request, String approver) implements Outcome {}
+
+        /** The requester tried to approve their own call. */
+        record SelfApproval(Pending request) implements Outcome {}
+
+        /** No such request, or it aged out while nobody was looking. */
+        record Unknown() implements Outcome {}
     }
 
-    public Optional<Pending> deny(String id) {
+    /**
+     * Approves a pending request on behalf of a named person.
+     *
+     * <p>The approver is required, not optional, and the signature is the reason: an
+     * approval whose grantor is unknown answers "was this allowed" but not "who allowed
+     * it", and after an incident only the second question matters. An earlier version of
+     * this recorded "granted by operator", which named a shared token.
+     *
+     * <p>Self-approval is refused. A human gate exists to put a second judgement in front
+     * of a destructive call; if the agent's own operator can wave it through, the gate
+     * measures persistence rather than agreement. This is enforced here rather than in any
+     * user interface, because the interface is not the thing an attacker uses.
+     */
+    public Outcome approve(String id, String approver) {
+        Pending p = pending.get(id);
+        if (p == null || p.expired()) {
+            pending.remove(id);
+            return new Outcome.Unknown();
+        }
+        if (approver != null && approver.equals(p.caller())) {
+            // Deliberately left in the queue. Someone else can still approve it, and
+            // removing it would let a requester cancel their own request by trying.
+            log.warn("Refused self-approval of {} by {}", id, approver);
+            return new Outcome.SelfApproval(p);
+        }
+
+        pending.remove(id);
+        granted.put(grantKey(p.caller(), p.serverId(), p.tool()), Instant.now());
+        persist();
+        log.info("Approval {} for {}/{} granted to {} by {}",
+                id, p.serverId(), p.tool(), p.caller(), approver);
+        return new Outcome.Granted(p, approver);
+    }
+
+    /**
+     * Denies a request.
+     *
+     * <p>No approver check here: anyone may refuse, including the requester. Withdrawing
+     * your own request is a reasonable thing to want, and the failure mode of an overly
+     * permissive deny is that a call does not happen.
+     */
+    public Optional<Pending> deny(String id, String deniedBy) {
         Optional<Pending> p = Optional.ofNullable(pending.remove(id));
-        p.ifPresent(x -> persist());
+        p.ifPresent(x -> {
+            persist();
+            log.info("Approval {} for {}/{} denied by {}", id, x.serverId(), x.tool(), deniedBy);
+        });
         return p;
     }
 
