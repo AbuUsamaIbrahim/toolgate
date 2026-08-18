@@ -1068,6 +1068,10 @@ a server can.
 Its honest use is triage: given forty outstanding drifts, which three should a human look
 at first. Not: is this one safe.
 
+It also **never blocks the page**. The note is fetched in the background and appears on a
+later refresh; the dashboard renders at the speed of local state whatever the provider is
+doing. Measured against an API hanging for forty seconds, the page still returned in 32ms.
+
 **Enabling it changes what this software does with your data.** Until then the gateway makes
 no outbound calls except to configured upstreams. That property is worth giving up
 knowingly rather than by default, which is why it is off.

@@ -87,6 +87,20 @@ public class DriftAdvisor {
     /** Keyed on the fingerprint, so a page refreshing every 15s does not re-ask. */
     private final Map<String, Advice> cache = new ConcurrentHashMap<>();
 
+    /** Diffs currently being asked about, so refreshes do not pile up duplicate calls. */
+    private final Map<String, Boolean> inFlight = new ConcurrentHashMap<>();
+
+    /**
+     * Daemon threads, and few of them. This is a background courtesy; it must not keep the
+     * JVM alive at shutdown, and it must not be able to consume the request pool.
+     */
+    private final java.util.concurrent.ExecutorService fetcher =
+            java.util.concurrent.Executors.newFixedThreadPool(2, r -> {
+                Thread t = new Thread(r, "toolgate-advisor");
+                t.setDaemon(true);
+                return t;
+            });
+
     public DriftAdvisor(AdvisorProperties props, ObjectMapper mapper) {
         this.props = props;
         this.mapper = mapper;
@@ -97,6 +111,23 @@ public class DriftAdvisor {
         return props.usable();
     }
 
+    @jakarta.annotation.PreDestroy
+    void stop() {
+        fetcher.shutdownNow();
+    }
+
+    /**
+     * Returns advice if it is already known, and otherwise starts fetching it.
+     *
+     * <p>Never blocks. The first version waited for the API, which degraded gracefully on a
+     * timeout and was still wrong: a twenty-second wait on a page that refreshes every
+     * fifteen seconds leaves the dashboard permanently behind its own refresh cycle, so a
+     * slow provider makes the console unusable rather than merely unhelpful.
+     *
+     * <p>The page is the operator's view of a security control. It has to render at the
+     * speed of local state, and an external opinion arrives on a later refresh or not at
+     * all. Fifteen seconds later is soon enough for a note nobody is required to read.
+     */
     public Optional<Advice> adviseOn(DriftStore.Drift drift) {
         if (!props.usable()) return Optional.empty();
 
@@ -104,16 +135,21 @@ public class DriftAdvisor {
         Advice cached = cache.get(key);
         if (cached != null) return Optional.of(cached);
 
-        try {
-            Advice advice = ask(DriftStore.renderText(drift));
-            if (advice != null) cache.put(key, advice);
-            return Optional.ofNullable(advice);
-        } catch (Exception e) {
-            // Never fails the page. An advisory note is a convenience; a dashboard that
-            // breaks when an external API is slow is worse than one with no notes.
-            log.debug("advisor unavailable: {}", e.toString());
-            return Optional.empty();
+        // One request per diff in flight. Without this, a page refreshing every fifteen
+        // seconds would queue a fresh call each time while the first was still running.
+        if (inFlight.putIfAbsent(key, Boolean.TRUE) == null) {
+            fetcher.execute(() -> {
+                try {
+                    Advice advice = ask(DriftStore.renderText(drift));
+                    if (advice != null) cache.put(key, advice);
+                } catch (Exception e) {
+                    log.debug("advisor unavailable: {}", e.toString());
+                } finally {
+                    inFlight.remove(key);
+                }
+            });
         }
+        return Optional.empty();
     }
 
     private Advice ask(String diff) throws Exception {

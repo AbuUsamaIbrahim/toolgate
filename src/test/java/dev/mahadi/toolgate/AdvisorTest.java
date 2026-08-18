@@ -108,6 +108,32 @@ class AdvisorTest {
     }
 
     @Nested
+    @DisplayName("It never blocks the page")
+    class NonBlocking {
+
+        @Test
+        @DisplayName("advice is absent until it has been fetched, rather than waited for")
+        void firstCallReturnsImmediately() {
+            var props = new AdvisorProperties();
+            props.setEnabled(true);
+            props.setApiKeyEnv("PATH");                       // any set variable
+            props.setEndpoint("http://127.0.0.1:1/never");    // nothing listens here
+            var drift = new DriftStore.Drift("files", "read_file", Instant.now(),
+                    "aaa", "bbb", null, null);
+
+            long start = System.currentTimeMillis();
+            var advice = advisor(props).adviseOn(drift);
+            long elapsed = System.currentTimeMillis() - start;
+
+            // The first version waited for the API. That degraded gracefully on timeout
+            // and was still wrong: a 20s wait on a page refreshing every 15s leaves the
+            // console permanently behind its own refresh cycle.
+            assertThat(advice).isEmpty();
+            assertThat(elapsed).as("must not wait on the network").isLessThan(1000);
+        }
+    }
+
+    @Nested
     @DisplayName("Its output is treated as hostile")
     class OutputIsUntrusted {
 
