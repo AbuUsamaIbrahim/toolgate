@@ -6,6 +6,7 @@ import dev.mahadi.toolgate.auth.AuthProperties;
 import dev.mahadi.toolgate.auth.TokenValidator;
 import dev.mahadi.toolgate.gateway.ApprovalStore;
 import dev.mahadi.toolgate.gateway.GatewayService;
+import dev.mahadi.toolgate.integrity.DriftStore;
 import dev.mahadi.toolgate.integrity.ToolPinStore;
 import dev.mahadi.toolgate.protocol.Mcp;
 import org.springframework.http.HttpHeaders;
@@ -37,15 +38,18 @@ public class GatewayController {
     private final AuditLog audit;
     private final ApprovalStore approvals;
     private final ToolPinStore pins;
+    private final DriftStore drifts;
     private final TokenValidator tokens;
     private final AuthProperties authProps;
 
     public GatewayController(GatewayService gateway, AuditLog audit, ApprovalStore approvals,
-                             ToolPinStore pins, TokenValidator tokens, AuthProperties authProps) {
+                             ToolPinStore pins, DriftStore drifts,
+                             TokenValidator tokens, AuthProperties authProps) {
         this.gateway = gateway;
         this.audit = audit;
         this.approvals = approvals;
         this.pins = pins;
+        this.drifts = drifts;
         this.tokens = tokens;
         this.authProps = authProps;
     }
@@ -155,6 +159,58 @@ public class GatewayController {
     @GetMapping("/toolgate/pins")
     public Map<String, ToolPinStore.Pin> pins() {
         return pins.all();
+    }
+
+    /**
+     * Outstanding drift, with a field-level diff of what changed.
+     *
+     * <p>This is the endpoint that makes the pin check usable. Two fingerprints tell an
+     * operator that something moved; only the diff tells them whether to accept it.
+     */
+    @GetMapping("/toolgate/drift")
+    public List<Map<String, Object>> drift() {
+        return drifts.list().stream().map(d -> {
+            Map<String, Object> m = new java.util.LinkedHashMap<>();
+            m.put("server", d.serverId());
+            m.put("tool", d.toolName());
+            m.put("detectedAt", d.detectedAt());
+            m.put("pinnedFingerprint", d.pinnedFingerprint());
+            m.put("currentFingerprint", d.currentFingerprint());
+            var diff = d.diff();
+            m.put("changes", diff == null ? null : diff.changes());
+            m.put("diffAvailable", diff != null);
+            return m;
+        }).toList();
+    }
+
+    /** The same drift rendered for a terminal, which is where it will actually be read. */
+    @GetMapping(path = "/toolgate/drift.txt", produces = "text/plain")
+    public String driftText() {
+        if (drifts.list().isEmpty()) return "no outstanding drift\n";
+        StringBuilder sb = new StringBuilder();
+        drifts.list().forEach(d -> sb.append(DriftStore.renderText(d)).append('\n'));
+        return sb.toString();
+    }
+
+    /**
+     * Accepts a drifted definition as the new baseline.
+     *
+     * <p>Only reachable after the operator has been able to see the diff, and deliberately
+     * a separate deliberate action rather than something the gateway ever does on its own.
+     */
+    @PostMapping("/toolgate/drift/{server}/{tool}/accept")
+    public ResponseEntity<?> acceptDrift(@PathVariable String server, @PathVariable String tool) {
+        return drifts.get(server, tool)
+                .<ResponseEntity<?>>map(d -> {
+                    pins.repin(server, d.currentDefinition());
+                    drifts.clear(server, tool);
+                    audit.record("operator", server, tool, "repin",
+                            AuditLog.Outcome.APPROVED,
+                            "operator accepted the changed definition as the new baseline",
+                            List.of("was=" + d.pinnedFingerprint(), "now=" + d.currentFingerprint()));
+                    return ResponseEntity.ok(Map.of("repinned", true, "tool", tool));
+                })
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     @GetMapping("/toolgate/approvals")

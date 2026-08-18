@@ -1,5 +1,6 @@
 package dev.mahadi.toolgate.policy;
 
+import dev.mahadi.toolgate.integrity.DriftStore;
 import dev.mahadi.toolgate.integrity.ToolPinStore;
 import dev.mahadi.toolgate.protocol.Mcp;
 import dev.mahadi.toolgate.scanner.InjectionScanner;
@@ -32,11 +33,14 @@ public class PolicyEngine {
     private final ToolPolicyProperties props;
     private final ToolPinStore pins;
     private final InjectionScanner scanner;
+    private final DriftStore drifts;
 
-    public PolicyEngine(ToolPolicyProperties props, ToolPinStore pins, InjectionScanner scanner) {
+    public PolicyEngine(ToolPolicyProperties props, ToolPinStore pins,
+                        InjectionScanner scanner, DriftStore drifts) {
         this.props = props;
         this.pins = pins;
         this.scanner = scanner;
+        this.drifts = drifts;
     }
 
     /** What the gateway decided, and why. The reason is carried so it can be audited. */
@@ -68,6 +72,8 @@ public class PolicyEngine {
         // 2. Integrity.
         var verdict = pins.check(serverId, tool);
         if (verdict instanceof ToolPinStore.Verdict.Drifted d) {
+            // Keep both definitions so an operator can be shown what actually changed.
+            drifts.record(d.pin(), tool, d.actualFingerprint());
             return new Decision.Deny(
                     "tool definition changed since it was pinned",
                     List.of(
@@ -92,6 +98,9 @@ public class PolicyEngine {
             return new Decision.NeedsApproval(
                     "tool metadata is suspicious (score %d): %s".formatted(scan.score(), evidence));
         }
+
+        // Back to matching its pin: the upstream reverted, so the alert is stale.
+        drifts.clear(serverId, tool.name());
 
         // A clean, allowlisted tool seen for the first time is still a change to the
         // agent's capability surface. Operators who want to review that set

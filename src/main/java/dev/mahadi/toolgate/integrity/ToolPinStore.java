@@ -57,7 +57,16 @@ public class ToolPinStore {
         pins.putAll(storage.load());
     }
 
-    public record Pin(String serverId, String toolName, String fingerprint, Instant pinnedAt) {}
+    /**
+     * A trusted tool definition.
+     *
+     * <p>The full {@code definition} is kept, not just its fingerprint. A hash can prove
+     * that something changed but can never show <em>what</em>, and "what" is the only
+     * question an operator can act on. Pins written before this was stored carry a null
+     * definition; drift is still detected for them, it simply cannot be diffed.
+     */
+    public record Pin(String serverId, String toolName, String fingerprint,
+                      Instant pinnedAt, Mcp.Tool definition) {}
 
     /** Outcome of checking a tool against its pin. */
     public sealed interface Verdict {
@@ -83,7 +92,7 @@ public class ToolPinStore {
         Pin existing = pins.get(key);
 
         if (existing == null) {
-            Pin created = new Pin(serverId, tool.name(), actual, Instant.now());
+            Pin created = new Pin(serverId, tool.name(), actual, Instant.now(), tool);
             pins.put(key, created);
             persist();
             log.info("Pinned new tool {} fingerprint={}", key, shortHash(actual));
@@ -99,7 +108,7 @@ public class ToolPinStore {
 
     /** Seeds a pin explicitly, for operators who review definitions before first use. */
     public Pin pin(String serverId, Mcp.Tool tool) {
-        Pin p = new Pin(serverId, tool.name(), ToolFingerprint.of(tool), Instant.now());
+        Pin p = new Pin(serverId, tool.name(), ToolFingerprint.of(tool), Instant.now(), tool);
         pins.put(key(serverId, tool.name()), p);
         persist();
         return p;

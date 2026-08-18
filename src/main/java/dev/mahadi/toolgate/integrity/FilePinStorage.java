@@ -3,6 +3,7 @@ package dev.mahadi.toolgate.integrity;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import dev.mahadi.toolgate.protocol.Mcp;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -47,7 +48,10 @@ public class FilePinStorage implements PinStorage {
     private static final Logger log = LoggerFactory.getLogger(FilePinStorage.class);
 
     /** Bumped when the on-disk shape changes incompatibly. */
-    private static final int SCHEMA_VERSION = 1;
+    private static final int SCHEMA_VERSION = 2;
+
+    /** Versions this build can read. Older ones are migrated; unknown ones are refused. */
+    private static final Set<Integer> READABLE = Set.of(1, 2);
 
     private static final Set<PosixFilePermission> UNSAFE = Set.of(
             PosixFilePermission.GROUP_WRITE, PosixFilePermission.OTHERS_WRITE);
@@ -68,7 +72,8 @@ public class FilePinStorage implements PinStorage {
     record Document(int schemaVersion, Instant savedAt, List<Entry> pins) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record Entry(String serverId, String toolName, String fingerprint, Instant pinnedAt) {}
+    record Entry(String serverId, String toolName, String fingerprint, Instant pinnedAt,
+                 Mcp.Tool definition) {}
 
     public boolean enabled() {
         return !props.getFile().isBlank();
@@ -88,17 +93,26 @@ public class FilePinStorage implements PinStorage {
 
         try {
             Document doc = mapper.readValue(Files.readString(path), Document.class);
-            if (doc.schemaVersion() != SCHEMA_VERSION) {
+            if (!READABLE.contains(doc.schemaVersion())) {
                 throw new PinStorageException(
-                        "pin file %s has schema version %d, this build understands %d"
-                                .formatted(path, doc.schemaVersion(), SCHEMA_VERSION));
+                        "pin file %s has schema version %d; this build reads %s"
+                                .formatted(path, doc.schemaVersion(), READABLE));
+            }
+            if (doc.schemaVersion() < SCHEMA_VERSION) {
+                // Forward-migrate rather than refuse. A v1 file has no stored definitions,
+                // so drift is still detected but cannot be diffed until each tool is
+                // re-pinned. Making operators delete their trust store to upgrade would
+                // hand them a worse outcome than a temporarily degraded diff.
+                log.warn("Pin file {} is schema v{}; reading it as v{}. Diffs will be "
+                        + "unavailable for existing pins until they are re-pinned.",
+                        path, doc.schemaVersion(), SCHEMA_VERSION);
             }
             Map<String, ToolPinStore.Pin> pins = new LinkedHashMap<>();
             if (doc.pins() != null) {
                 for (Entry e : doc.pins()) {
                     pins.put(e.serverId() + "/" + e.toolName(),
                             new ToolPinStore.Pin(e.serverId(), e.toolName(),
-                                    e.fingerprint(), e.pinnedAt()));
+                                    e.fingerprint(), e.pinnedAt(), e.definition()));
                 }
             }
             log.info("Loaded {} tool pins from {}", pins.size(), path);
@@ -125,7 +139,8 @@ public class FilePinStorage implements PinStorage {
             // Sorted so the file is stable across saves and diffs cleanly in review.
             Map<String, ToolPinStore.Pin> sorted = new TreeMap<>(pins);
             List<Entry> entries = sorted.values().stream()
-                    .map(p -> new Entry(p.serverId(), p.toolName(), p.fingerprint(), p.pinnedAt()))
+                    .map(p -> new Entry(p.serverId(), p.toolName(), p.fingerprint(),
+                            p.pinnedAt(), p.definition()))
                     .toList();
 
             String json = mapper.writeValueAsString(

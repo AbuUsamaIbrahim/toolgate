@@ -1,6 +1,7 @@
 package dev.mahadi.toolgate;
 
 import dev.mahadi.toolgate.integrity.ToolFingerprint;
+import dev.mahadi.toolgate.integrity.DriftStore;
 import dev.mahadi.toolgate.integrity.InMemoryPinStorage;
 import dev.mahadi.toolgate.integrity.ToolPinStore;
 import dev.mahadi.toolgate.policy.PolicyEngine;
@@ -45,7 +46,7 @@ class AttackSimulationTest {
         props.setServers(new LinkedHashMap<>(Map.of(SERVER, server)));
 
         pins = new ToolPinStore(new InMemoryPinStorage());
-        policy = new PolicyEngine(props, pins, new InjectionScanner());
+        policy = new PolicyEngine(props, pins, new InjectionScanner(), new DriftStore());
     }
 
     /** A benign tool an operator has approved. */
