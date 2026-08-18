@@ -55,6 +55,8 @@ standard transports, in both directions.
 - Two threads could each record a first sighting of the same definition.
 
 ### Added
+- An optional drift advisor: an assistant note beside each diff, off by default, advisory
+  only — no credential, no action endpoint, and no store it could mutate.
 - An operator dashboard at `/toolgate`, behind the same credential as the rest of the
   operator API. Read-only; renders the drift diff, the approval queue and recent refusals.
 

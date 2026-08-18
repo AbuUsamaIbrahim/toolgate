@@ -44,11 +44,14 @@ public class DashboardController {
     private final SurfacePinStore surfacePins;
     private final BundleStore bundles;
     private final OperatorSessions sessions;
+    private final dev.mahadi.toolgate.advisor.DriftAdvisor advisor;
 
     public DashboardController(AuditLog audit, DriftStore drifts, ApprovalStore approvals,
                                ToolPinStore pins, SurfacePinStore surfacePins,
-                               BundleStore bundles, OperatorSessions sessions) {
+                               BundleStore bundles, OperatorSessions sessions,
+                               dev.mahadi.toolgate.advisor.DriftAdvisor advisor) {
         this.sessions = sessions;
+        this.advisor = advisor;
         this.audit = audit;
         this.drifts = drifts;
         this.approvals = approvals;
@@ -156,6 +159,7 @@ public class DashboardController {
                     .append("</h3><div class=\"sub\">detected ").append(escape(ago(d.detectedAt())))
                     .append("</div>")
                     .append(diff(DriftStore.renderText(d)))
+                    .append(advice(d))
                     .append("<div class=\"note\">Accept only if this reads as a product change. "
                             + "Instructions aimed at the model, unexpected paths, or characters "
                             + "marked in red are the attack this exists to catch.</div>");
@@ -176,6 +180,41 @@ public class DashboardController {
             b.append("</div>");
         }
         return b.toString();
+    }
+
+    /**
+     * The advisor's note, shown beside the diff and never in place of it.
+     *
+     * <p>Marked as untrusted in the interface rather than only in the documentation,
+     * because the model read the same attacker-controlled text the operator is reading and
+     * can be talked into saying reassuring things about it. Its output is escaped like any
+     * other hostile string: a model can be induced to emit markup as readily as a server
+     * can.
+     */
+    private String advice(DriftStore.Drift d) {
+        if (!advisor.enabled()) return "";
+
+        return advisor.adviseOn(d).map(a -> {
+            String cls = switch (a.risk()) {
+                case "high" -> "p-bad";
+                case "medium" -> "p-warn";
+                case "low" -> "p-ok";
+                default -> "p-warn";
+            };
+            StringBuilder o = new StringBuilder("<div class=\"advice\">")
+                    .append("<div class=\"advice-head\"><span class=\"pill ").append(cls)
+                    .append("\">").append(escape(a.risk())).append(" risk</span>")
+                    .append("<span class=\"warnlabel\">assistant — advisory, and readable by "
+                            + "the same text it is describing</span></div>")
+                    .append("<div class=\"dim\">").append(escape(a.summary())).append("</div>");
+            if (!a.observations().isEmpty()) {
+                o.append("<ul>");
+                a.observations().forEach(x -> o.append("<li>").append(escape(x)).append("</li>"));
+                o.append("</ul>");
+            }
+            return o.append("<div class=\"note\">This is a second pair of eyes, not a "
+                    + "verdict. The diff above is the thing to decide on.</div></div>").toString();
+        }).orElse("");
     }
 
     private String approvalSection(String csrf) {

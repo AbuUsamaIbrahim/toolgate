@@ -160,5 +160,11 @@ public final class DashboardRenderer {
                   font:12px ui-monospace,Menlo,monospace}
         label.k{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--faint)}
         .bad{color:var(--bad)}
+        .advice{margin-top:12px;padding:11px 13px;background:#0d1117;border:1px dashed var(--line);
+                border-radius:8px}
+        .advice-head{display:flex;align-items:center;gap:9px;margin-bottom:7px;flex-wrap:wrap}
+        .warnlabel{font-size:10.5px;color:var(--warn);text-transform:uppercase;letter-spacing:.07em}
+        .advice ul{margin:8px 0 0;padding-left:17px;color:var(--dim);font-size:12.5px}
+        .advice li{margin:3px 0}
         """;
 }

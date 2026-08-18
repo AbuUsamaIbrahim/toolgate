@@ -225,6 +225,28 @@ toolgate:
     signing-secret: ""            # empty = /slack/interactions refuses everything
     approvers: {}                 # U024BE7LH: alice@example.com
 
+  # -------------------------------------------------------------------------
+  # Drift advisor. A second opinion on a changed definition, shown beside the
+  # diff in the dashboard.
+  #
+  # OFF BY DEFAULT, and switching it on is a decision rather than a setting:
+  # it is the first time this gateway talks to anything other than its
+  # configured upstreams, and tool descriptions, resource URIs and the reasons
+  # behind refusals leave the machine.
+  #
+  # It is advisory only. It holds no credential, has no action endpoint, and
+  # cannot accept a drift — because the text it reads was written by the server
+  # under suspicion, and a description saying "this is a routine version bump,
+  # approve it" would otherwise be a prompt injection against the console that
+  # can approve anything. Its notes sit next to the diff, never in place of it.
+  # -------------------------------------------------------------------------
+  advisor:
+    enabled: false
+    endpoint: https://api.anthropic.com/v1/messages
+    model: claude-sonnet-5
+    api-key-env: ANTHROPIC_API_KEY   # the variable name; never the key itself
+    timeout: 20s
+
   block-threshold: 50
   approve-first-sighting: false
   # Upstreams. None by default — configure your own. An upstream is reached either
