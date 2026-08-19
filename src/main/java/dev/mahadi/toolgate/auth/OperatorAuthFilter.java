@@ -93,9 +93,24 @@ public class OperatorAuthFilter implements WebFilter {
         }
 
         if (presented == null || !constantTimeEquals(sha256(presented), expected.toLowerCase())) {
+            // A browser has no Authorization header and cannot act on a 401. Redirect it to
+            // the login page so it can obtain a session. An API client carrying a bearer
+            // token that failed gets the 401 it can handle.
+            boolean isBrowser = presented == null
+                    && acceptsHtml(exchange.getRequest().getHeaders().getFirst(HttpHeaders.ACCEPT));
+            if (isBrowser) {
+                exchange.getResponse().setStatusCode(HttpStatus.FOUND);
+                exchange.getResponse().getHeaders().setLocation(
+                        java.net.URI.create("/toolgate/login"));
+                return exchange.getResponse().setComplete();
+            }
             return deny(exchange, HttpStatus.UNAUTHORIZED);
         }
         return chain.filter(exchange);
+    }
+
+    private static boolean acceptsHtml(String accept) {
+        return accept != null && accept.contains("text/html");
     }
 
     private static boolean isLoopback(ServerWebExchange exchange) {
