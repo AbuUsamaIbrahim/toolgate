@@ -66,6 +66,8 @@ public class DashboardController {
         this.bundles = bundles;
     }
 
+    private static final int AUDIT_PAGE_SIZE = 20;
+
     @GetMapping(value = "/toolgate", produces = MediaType.TEXT_HTML_VALUE)
     public ResponseEntity<String> dashboard(org.springframework.web.server.ServerWebExchange exchange) {
         var cookie = exchange.getRequest().getCookies().get(OperatorSessions.COOKIE);
@@ -75,6 +77,12 @@ public class DashboardController {
         // Reached with a bearer token rather than a browser session: render it read-only.
         // The buttons need a CSRF token, and a CSRF token needs a session to be bound to.
         String csrf = session == null ? null : session.csrfToken();
+
+        int auditPage = 0;
+        try {
+            var raw = exchange.getRequest().getQueryParams().getFirst("auditPage");
+            if (raw != null) auditPage = Math.max(0, Integer.parseInt(raw));
+        } catch (NumberFormatException ignored) {}
 
         StringBuilder b = new StringBuilder();
         b.append("<h1>toolgate</h1><div class=\"sub\">")
@@ -89,7 +97,7 @@ public class DashboardController {
         b.append(cards());
         b.append(driftSection(csrf));
         b.append(approvalSection(csrf));
-        b.append(recentRefusals());
+        b.append(recentRefusals(auditPage));
 
         return ResponseEntity.ok()
                 // No script at all, from anywhere. The page renders text an attacker wrote,
@@ -259,22 +267,30 @@ public class DashboardController {
     }
 
     /**
-     * Refusals only.
+     * Refusals only, paginated.
      *
      * <p>Showing everything would bury the interesting lines under routine ones, which is
      * how a log stops being read. What the gateway <em>allowed</em> is in the audit file for
      * whoever needs it.
      */
-    private String recentRefusals() {
-        List<AuditLog.Entry> refusals = audit.recent(400).stream()
+    private String recentRefusals(int page) {
+        List<AuditLog.Entry> all = audit.recent(1000).stream()
                 .filter(e -> e.outcome() != AuditLog.Outcome.ALLOWED)
-                .limit(40)
                 .toList();
 
-        StringBuilder b = new StringBuilder("<h2>Recently refused</h2>");
-        if (refusals.isEmpty()) {
+        int total = all.size();
+        int totalPages = Math.max(1, (int) Math.ceil((double) total / AUDIT_PAGE_SIZE));
+        page = Math.min(page, totalPages - 1);
+        List<AuditLog.Entry> refusals = all.stream()
+                .skip((long) page * AUDIT_PAGE_SIZE)
+                .limit(AUDIT_PAGE_SIZE)
+                .toList();
+
+        StringBuilder b = new StringBuilder("<h2 id=\"recently-refused\">Recently refused</h2>");
+        if (total == 0) {
             return b.append("<div class=\"empty\">Nothing has been refused.</div>").toString();
         }
+
         b.append("<table><tr><th>When</th><th></th><th>What</th><th>Why</th></tr>");
         for (var e : refusals) {
             String pill = switch (e.outcome()) {
@@ -283,14 +299,45 @@ public class DashboardController {
                 case FAILED -> "p-warn";
                 default -> "p-ok";
             };
+            // Build a human-readable explanation: what the caller was trying to do,
+            // the policy reason, and any evidence the gateway recorded.
+            StringBuilder why = new StringBuilder();
+            why.append("<span class=\"mono\">").append(escape(e.caller()))
+               .append("</span> tried to call <span class=\"mono\">")
+               .append(escape(e.serverId())).append('/').append(escape(e.tool()))
+               .append("</span><br><span class=\"dim\">").append(escape(e.reason()))
+               .append("</span>");
+            if (!e.evidence().isEmpty()) {
+                why.append("<br><span class=\"dim\" style=\"font-size:0.85em\">");
+                why.append(escape(String.join(" · ", e.evidence())));
+                why.append("</span>");
+            }
+
             b.append("<tr><td class=\"dim mono\">").append(escape(ago(e.at())))
                     .append("</td><td><span class=\"pill ").append(pill).append("\">")
                     .append(escape(e.outcome().name())).append("</span></td>")
                     .append("<td class=\"mono\">").append(escape(e.serverId()))
                     .append('/').append(escape(e.tool()))
-                    .append("</td><td class=\"dim\">").append(escape(e.reason()))
+                    .append("</td><td>").append(why)
                     .append("</td></tr>");
         }
-        return b.append("</table>").toString();
+        b.append("</table>");
+
+        // Pagination controls
+        b.append("<div class=\"pagination\">");
+        if (page > 0) {
+            b.append("<a href=\"/toolgate?auditPage=").append(page - 1)
+             .append("#recently-refused\">&#8592; newer</a> ");
+        }
+        b.append("<span class=\"dim\">page ").append(page + 1)
+         .append(" of ").append(totalPages)
+         .append(" (").append(total).append(" total)</span>");
+        if (page < totalPages - 1) {
+            b.append(" <a href=\"/toolgate?auditPage=").append(page + 1)
+             .append("#recently-refused\">older &#8594;</a>");
+        }
+        b.append("</div>");
+
+        return b.toString();
     }
 }

@@ -185,5 +185,7 @@ public final class DashboardRenderer {
         .warnlabel{font-size:10.5px;color:var(--warn);text-transform:uppercase;letter-spacing:.07em}
         .advice ul{margin:8px 0 0;padding-left:17px;color:var(--dim);font-size:12.5px}
         .advice li{margin:3px 0}
+        .pagination{margin-top:12px;font-size:12px;color:var(--dim)}
+        .pagination a{color:var(--fg);text-decoration:underline;margin:0 4px}
         """;
 }
