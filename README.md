@@ -1068,6 +1068,13 @@ a server can.
 Its honest use is triage: given forty outstanding drifts, which three should a human look
 at first. Not: is this one safe.
 
+A provider that fails is **not re-asked on every refresh**. Only successes were cached
+originally, so a failing endpoint was called once per poll — measured at thirty calls a
+minute against a real one returning 402. Failures now back off exponentially from a minute
+to a cap of thirty, which is a rate-limit problem on a free account and a billing one on a
+paid account, for a note nobody is required to read. A provider that is briefly down still
+recovers on its own.
+
 It also **never blocks the page**. The note is fetched in the background and appears on a
 later refresh; the dashboard renders at the speed of local state whatever the provider is
 doing. Measured against an API hanging for forty seconds, the page still returned in 32ms.

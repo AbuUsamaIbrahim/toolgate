@@ -12,6 +12,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -91,6 +92,24 @@ public class DriftAdvisor {
     private final Map<String, Boolean> inFlight = new ConcurrentHashMap<>();
 
     /**
+     * When a failed diff may be retried, and how many times it has failed.
+     *
+     * <p>Only successes were cached, so a provider that kept failing was re-asked on every
+     * poll — measured at thirty calls a minute against a real endpoint returning 402. That
+     * is a rate-limit problem on a free account and a billing one on a paid account, for a
+     * note nobody is required to read.
+     *
+     * <p>Backoff is exponential from one minute and capped, so a provider that is briefly
+     * down still recovers on its own without anyone restarting the gateway.
+     */
+    private final Map<String, Backoff> failures = new ConcurrentHashMap<>();
+
+    private record Backoff(int attempts, Instant retryAfter) {}
+
+    public static final Duration FIRST_BACKOFF = Duration.ofMinutes(1);
+    public static final Duration MAX_BACKOFF = Duration.ofMinutes(30);
+
+    /**
      * Daemon threads, and few of them. This is a background courtesy; it must not keep the
      * JVM alive at shutdown, and it must not be able to consume the request pool.
      */
@@ -135,21 +154,54 @@ public class DriftAdvisor {
         Advice cached = cache.get(key);
         if (cached != null) return Optional.of(cached);
 
+        Backoff backoff = failures.get(key);
+        if (backoff != null && Instant.now().isBefore(backoff.retryAfter())) {
+            return Optional.empty();
+        }
+
         // One request per diff in flight. Without this, a page refreshing every fifteen
         // seconds would queue a fresh call each time while the first was still running.
         if (inFlight.putIfAbsent(key, Boolean.TRUE) == null) {
             fetcher.execute(() -> {
                 try {
                     Advice advice = ask(DriftStore.renderText(drift));
-                    if (advice != null) cache.put(key, advice);
+                    if (advice != null) {
+                        cache.put(key, advice);
+                        failures.remove(key);
+                    } else {
+                        recordFailure(key);
+                    }
                 } catch (Exception e) {
                     log.debug("advisor unavailable: {}", e.toString());
+                    recordFailure(key);
                 } finally {
                     inFlight.remove(key);
                 }
             });
         }
         return Optional.empty();
+    }
+
+    /**
+     * Pushes the next attempt for this diff further out.
+     *
+     * <p>A refused answer counts as a failure alongside a thrown one: an HTTP 402 or a
+     * malformed body means asking again immediately will fail the same way, and the reason
+     * the caller could not get an answer does not change how often it should re-ask.
+     */
+    private void recordFailure(String key) {
+        failures.compute(key, (k, previous) -> {
+            int attempts = previous == null ? 1 : previous.attempts() + 1;
+            long millis = Math.min(
+                    FIRST_BACKOFF.toMillis() * (1L << Math.min(attempts - 1, 20)),
+                    MAX_BACKOFF.toMillis());
+            return new Backoff(attempts, Instant.now().plusMillis(millis));
+        });
+    }
+
+    /** Visible for tests: when this diff may next be asked about, if it has failed. */
+    public Optional<Instant> retryAfter(String key) {
+        return Optional.ofNullable(failures.get(key)).map(Backoff::retryAfter);
     }
 
     private Advice ask(String diff) throws Exception {

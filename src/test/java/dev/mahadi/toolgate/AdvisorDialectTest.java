@@ -175,6 +175,70 @@ class AdvisorDialectTest {
     }
 
     @Nested
+    @DisplayName("A failing provider is not re-asked on every refresh")
+    class Backoff {
+
+        @Test
+        @DisplayName("a provider that refuses is asked once, not once per poll")
+        void failureIsNotRetriedImmediately() throws Exception {
+            // 402 Payment Required is what a real DeepSeek account with no balance
+            // returns, and what exposed this: thirty calls in sixty seconds.
+            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            server.createContext("/", exchange -> {
+                seen.add(new Recorded(Map.copyOf(exchange.getRequestHeaders()), ""));
+                exchange.sendResponseHeaders(402, -1);
+                exchange.close();
+            });
+            server.start();
+            String endpoint = "http://127.0.0.1:" + server.getAddress().getPort() + "/v1";
+
+            var advisor = new DriftAdvisor(
+                    props(endpoint, AdvisorProperties.Dialect.OPENAI), mapper);
+
+            var d = drift();
+            advisor.adviseOn(d);
+            for (int i = 0; i < 100 && seen.isEmpty(); i++) TimeUnit.MILLISECONDS.sleep(50);
+            assertThat(seen).hasSize(1);
+
+            // Twenty further polls — four minutes of a 15s refresh — must not reach it.
+            for (int i = 0; i < 20; i++) {
+                advisor.adviseOn(d);
+                TimeUnit.MILLISECONDS.sleep(5);
+            }
+            TimeUnit.MILLISECONDS.sleep(300);
+
+            assertThat(seen).hasSize(1);
+        }
+
+        @Test
+        @DisplayName("each failure pushes the next attempt further out")
+        void backoffGrows() throws Exception {
+            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            server.createContext("/", exchange -> {
+                exchange.sendResponseHeaders(402, -1);
+                exchange.close();
+            });
+            server.start();
+            String endpoint = "http://127.0.0.1:" + server.getAddress().getPort() + "/v1";
+
+            var advisor = new DriftAdvisor(
+                    props(endpoint, AdvisorProperties.Dialect.OPENAI), mapper);
+            var d = drift();
+            String key = d.serverId() + "/" + d.toolName() + "@" + d.currentFingerprint();
+
+            advisor.adviseOn(d);
+            for (int i = 0; i < 100 && advisor.retryAfter(key).isEmpty(); i++) {
+                TimeUnit.MILLISECONDS.sleep(50);
+            }
+
+            var first = advisor.retryAfter(key).orElseThrow();
+            // At least the opening backoff, and never beyond the cap.
+            assertThat(first).isAfter(java.time.Instant.now().plusSeconds(50));
+            assertThat(first).isBefore(java.time.Instant.now().plus(DriftAdvisor.MAX_BACKOFF));
+        }
+    }
+
+    @Nested
     @DisplayName("Reading the reply")
     class Extraction {
 
