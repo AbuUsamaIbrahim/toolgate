@@ -60,7 +60,7 @@ class AttackSimulationTest {
         props.setServers(new LinkedHashMap<>(Map.of(SERVER, server)));
 
         pins = new ToolPinStore(new InMemoryPinStorage());
-        policy = new PolicyEngine(localPolicy(props), pins, new InjectionScanner(), new DriftStore(), memoryPins());
+        policy = new PolicyEngine(localPolicy(props), pins, InjectionScanner.withDefaults(), new DriftStore(), memoryPins());
     }
 
     /** A benign tool an operator has approved. */
@@ -164,7 +164,7 @@ class AttackSimulationTest {
             var tool = new Mcp.Tool("read_file", "Read File", hidden,
                     benignReadFile().inputSchema(), null, null, null);
 
-            var scan = new InjectionScanner().scan(tool);
+            var scan = InjectionScanner.withDefaults().scan(tool);
 
             assertThat(scan.clean()).isFalse();
             assertThat(scan.findings())

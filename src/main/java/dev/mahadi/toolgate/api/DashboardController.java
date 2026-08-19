@@ -6,6 +6,8 @@ import dev.mahadi.toolgate.gateway.ApprovalStore;
 import dev.mahadi.toolgate.integrity.DriftStore;
 import dev.mahadi.toolgate.integrity.SurfacePinStore;
 import dev.mahadi.toolgate.integrity.ToolPinStore;
+import dev.mahadi.toolgate.scanner.ScannerRule;
+import dev.mahadi.toolgate.scanner.ScannerRulesStore;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -51,11 +53,13 @@ public class DashboardController {
     private final BundleStore bundles;
     private final OperatorSessions sessions;
     private final dev.mahadi.toolgate.advisor.DriftAdvisor advisor;
+    private final ScannerRulesStore scannerRules;
 
     public DashboardController(AuditLog audit, DriftStore drifts, ApprovalStore approvals,
                                ToolPinStore pins, SurfacePinStore surfacePins,
                                BundleStore bundles, OperatorSessions sessions,
-                               dev.mahadi.toolgate.advisor.DriftAdvisor advisor) {
+                               dev.mahadi.toolgate.advisor.DriftAdvisor advisor,
+                               ScannerRulesStore scannerRules) {
         this.sessions = sessions;
         this.advisor = advisor;
         this.audit = audit;
@@ -64,6 +68,7 @@ public class DashboardController {
         this.pins = pins;
         this.surfacePins = surfacePins;
         this.bundles = bundles;
+        this.scannerRules = scannerRules;
     }
 
     private static final int AUDIT_PAGE_SIZE = 20;
@@ -97,6 +102,7 @@ public class DashboardController {
         b.append(cards());
         b.append(driftSection(csrf));
         b.append(approvalSection(csrf));
+        b.append(scannerRulesSection(csrf));
         b.append(recentRefusals(auditPage));
 
         return ResponseEntity.ok()
@@ -263,6 +269,109 @@ public class DashboardController {
         });
         b.append("</table><div class=\"note\">The requester cannot approve their own call. "
                 + "Approving names you in the audit trail.</div>");
+        return b.toString();
+    }
+
+    /**
+     * The live set of injection scanner rules an admin can tune without a redeploy.
+     *
+     * <p>Built-in rules can be disabled (to suppress a false-positive category) but not
+     * deleted — removing them permanently requires a code change, which is deliberate.
+     * Custom rules added here can be deleted freely.
+     */
+    private String scannerRulesSection(String csrf) {
+        List<ScannerRule> all = scannerRules.all();
+        StringBuilder b = new StringBuilder("<h2 id=\"scanner-rules\">Scanner rules</h2>");
+        b.append("<div class=\"sub\">Regex patterns scored against every tool definition at "
+                + "tools/list. Score ≥ block-threshold → tool is withheld from the model.</div>");
+
+        b.append("<table><tr><th>Category</th><th>Pattern</th><th>Weight</th>"
+                + "<th>Description</th><th>Status</th>");
+        if (csrf != null) b.append("<th>Actions</th>");
+        b.append("</tr>");
+
+        for (ScannerRule r : all) {
+            String statusPill = r.enabled()
+                    ? "<span class=\"pill p-ok\">enabled</span>"
+                    : "<span class=\"pill p-bad\">disabled</span>";
+            String builtInBadge = r.builtIn()
+                    ? " <span class=\"pill dim\" style=\"font-size:10px\">built-in</span>" : "";
+
+            b.append("<tr>")
+             .append("<td class=\"mono\">").append(escape(r.category())).append("</td>")
+             .append("<td class=\"mono\" style=\"word-break:break-all;max-width:260px\">")
+             .append(escape(r.pattern())).append("</td>")
+             .append("<td class=\"mono\">").append(r.weight()).append("</td>")
+             .append("<td class=\"dim\">").append(escape(r.description())).append(builtInBadge)
+             .append("</td>")
+             .append("<td>").append(statusPill).append("</td>");
+
+            if (csrf != null) {
+                // Toggle button (available for all rules)
+                b.append("<td style=\"white-space:nowrap\">")
+                 .append("<form method=\"post\" action=\"/toolgate/ui/scanner/toggle\" "
+                         + "class=\"inline\">")
+                 .append(csrfField(csrf))
+                 .append("<input type=\"hidden\" name=\"id\" value=\"").append(escape(r.id()))
+                 .append("\">")
+                 .append("<button type=\"submit\">")
+                 .append(r.enabled() ? "Disable" : "Enable")
+                 .append("</button></form>");
+
+                // Delete button only for custom rules
+                if (!r.builtIn()) {
+                    b.append(" <form method=\"post\" action=\"/toolgate/ui/scanner/delete\" "
+                             + "class=\"inline\">")
+                     .append(csrfField(csrf))
+                     .append("<input type=\"hidden\" name=\"id\" value=\"").append(escape(r.id()))
+                     .append("\">")
+                     .append("<button type=\"submit\" class=\"danger\">Delete</button>")
+                     .append("</form>");
+                }
+                b.append("</td>");
+            }
+            b.append("</tr>");
+        }
+        b.append("</table>");
+
+        // Add-rule form — only when logged in with a session
+        if (csrf != null) {
+            b.append("<details style=\"margin-top:14px\"><summary style=\"cursor:pointer;"
+                     + "color:var(--dim);font-size:12px\">Add a custom rule</summary>");
+            b.append("<form method=\"post\" action=\"/toolgate/ui/scanner/rule\" "
+                     + "style=\"margin-top:10px;display:grid;gap:8px;max-width:560px\">")
+             .append(csrfField(csrf))
+             .append("<div><label class=\"k\">Category</label>"
+                     + "<select name=\"category\" style=\"margin-top:4px;width:100%;"
+                     + "background:#0d1117;border:1px solid var(--line);border-radius:6px;"
+                     + "color:var(--ink);padding:7px 10px\">")
+             .append("<option value=\"imperative_instruction\">imperative_instruction</option>")
+             .append("<option value=\"credential_target\">credential_target</option>")
+             .append("<option value=\"exfiltration_shape\">exfiltration_shape</option>")
+             .append("<option value=\"hidden_unicode\">hidden_unicode</option>")
+             .append("</select></div>")
+             .append("<div><label class=\"k\">Regex pattern (Java, case-insensitive)</label>"
+                     + "<input name=\"pattern\" required placeholder=\"e.g. exfiltrate\\\\s+to\" "
+                     + "style=\"margin-top:4px;width:100%;background:#0d1117;border:1px solid "
+                     + "var(--line);border-radius:6px;color:var(--ink);font-family:"
+                     + "ui-monospace,Menlo,monospace;padding:7px 10px\"></div>")
+             .append("<div style=\"display:grid;grid-template-columns:1fr 1fr;gap:8px\">")
+             .append("<div><label class=\"k\">Weight (added to score on match)</label>"
+                     + "<input name=\"weight\" type=\"number\" value=\"30\" min=\"1\" max=\"100\" "
+                     + "style=\"margin-top:4px;width:100%;background:#0d1117;border:1px solid "
+                     + "var(--line);border-radius:6px;color:var(--ink);padding:7px 10px\"></div>")
+             .append("<div><label class=\"k\">Description (shown in this table)</label>"
+                     + "<input name=\"description\" placeholder=\"What this pattern catches\" "
+                     + "style=\"margin-top:4px;width:100%;background:#0d1117;border:1px solid "
+                     + "var(--line);border-radius:6px;color:var(--ink);padding:7px 10px\"></div>")
+             .append("</div>")
+             .append("<div><button type=\"submit\">Add rule</button></div>")
+             .append("</form></details>");
+        }
+
+        b.append("<div class=\"note\">Scores are additive. A single match at weight 40 plus "
+                + "one at weight 30 = score 70. Block threshold is set in "
+                + "<code>toolgate.block-threshold</code> (currently blocks at ≥ 50).</div>");
         return b.toString();
     }
 

@@ -120,6 +120,9 @@ toolgate:
     file: ~/.toolgate/pins.json
     require-secure-permissions: true
 
+  scanner:
+    rules-file: ~/.toolgate/scanner-rules.json
+
   # -------------------------------------------------------------------------
   # Audit trail. The in-memory ring buffer behind GET /toolgate/audit is a
   # convenience; this is the record. Written as JSON Lines, appended and

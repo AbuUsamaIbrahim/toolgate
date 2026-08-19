@@ -87,7 +87,7 @@ class CentralPolicyTest {
         var effective = new EffectivePolicy(permissiveLocal(), store);
         var pins = new ToolPinStore(new InMemoryPinStorage());
         return new Harness(
-                new PolicyEngine(effective, pins, new InjectionScanner(), new DriftStore(), memoryPins()),
+                new PolicyEngine(effective, pins, InjectionScanner.withDefaults(), new DriftStore(), memoryPins()),
                 pins, effective);
     }
 

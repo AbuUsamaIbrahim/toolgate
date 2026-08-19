@@ -59,7 +59,7 @@ class ResourcePolicyTest {
                 new EffectivePolicy(props, new BundleStore(new BundleProperties(),
                         new com.fasterxml.jackson.databind.ObjectMapper())),
                 new ToolPinStore(new InMemoryPinStorage()),
-                new InjectionScanner(), new DriftStore(), memoryPins());
+                InjectionScanner.withDefaults(), new DriftStore(), memoryPins());
     }
 
     private static Mcp.Resource res(String uri, String description) {
@@ -120,7 +120,7 @@ class ResourcePolicyTest {
                     new EffectivePolicy(props, new BundleStore(new BundleProperties(),
                             new com.fasterxml.jackson.databind.ObjectMapper())),
                     new ToolPinStore(new InMemoryPinStorage()),
-                    new InjectionScanner(), new DriftStore(), memoryPins());
+                    InjectionScanner.withDefaults(), new DriftStore(), memoryPins());
 
             var decision = engine.evaluateResource(ANYONE, SERVER,
                     res("https://evil.example.com/payload", "notes"));

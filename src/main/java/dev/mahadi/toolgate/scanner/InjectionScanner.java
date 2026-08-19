@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * Heuristic detection of adversarial content in tool metadata.
@@ -19,51 +20,31 @@ import java.util.regex.Pattern;
  * Pattern matching against natural language is a losing game played alone — an attacker
  * who knows the rules can phrase around them. It is included because in defence in depth
  * a cheap filter that catches the unsophisticated majority still has value, and because
- * the structural signals below ({@code SUSPICIOUS_UNICODE}, credential paths, exfiltration
- * shapes) are considerably harder to evade than the phrase list.
+ * the structural signals below (hidden unicode, credential paths, exfiltration shapes)
+ * are considerably harder to evade than the phrase list.
  *
  * <p>The scanner therefore <em>scores</em> rather than blocks outright, and policy decides
  * what a score means. Treating this as a reliable oracle would be a design error.
+ *
+ * <p>Rules are loaded from {@link ScannerRulesStore} and can be edited through the
+ * operator portal without a redeploy.
  */
 @Component
 public class InjectionScanner {
 
-    /**
-     * Instruction-shaped phrases. A tool <em>description</em> describes what a tool does;
-     * it has no legitimate reason to issue commands to the model reading it.
-     */
-    private static final List<Pattern> IMPERATIVES = List.of(
-            Pattern.compile("ignore\\s+(all\\s+)?(previous|prior|above|earlier)\\s+instructions?", Pattern.CASE_INSENSITIVE),
-            Pattern.compile("disregard\\s+(the\\s+)?(system|previous|above)", Pattern.CASE_INSENSITIVE),
-            Pattern.compile("you\\s+(are|must|should)\\s+now\\s+", Pattern.CASE_INSENSITIVE),
-            Pattern.compile("do\\s+not\\s+(tell|inform|mention|reveal)\\s+the\\s+user", Pattern.CASE_INSENSITIVE),
-            Pattern.compile("without\\s+(telling|informing|asking)\\s+the\\s+user", Pattern.CASE_INSENSITIVE),
-            Pattern.compile("before\\s+(using|calling)\\s+(this|any)\\s+tool,?\\s+(you\\s+)?(must|should|first)", Pattern.CASE_INSENSITIVE),
-            Pattern.compile("<\\s*(system|important|secret)\\s*>", Pattern.CASE_INSENSITIVE)
-    );
+    private static final java.util.Set<String> URI_VALUED_SCHEMA_KEYS =
+            java.util.Set.of("$schema", "$id");
 
-    /** Paths and identifiers that appear in credential-theft payloads. */
-    private static final List<Pattern> CREDENTIAL_TARGETS = List.of(
-            Pattern.compile("~?/?\\.ssh/|id_rsa|id_ed25519", Pattern.CASE_INSENSITIVE),
-            Pattern.compile("\\.env\\b|\\.aws/credentials|\\.netrc|\\.npmrc", Pattern.CASE_INSENSITIVE),
-            Pattern.compile("GITHUB_TOKEN|AWS_SECRET|API_?KEY|PRIVATE_?KEY", Pattern.CASE_INSENSITIVE),
-            Pattern.compile("/etc/(passwd|shadow)", Pattern.CASE_INSENSITIVE)
-    );
+    private final ScannerRulesStore store;
 
-    /** Shapes associated with moving data somewhere the user did not ask for. */
-    private static final List<Pattern> EXFILTRATION = List.of(
-            Pattern.compile("(send|post|upload|forward|exfiltrate)\\s+(it|them|the\\s+\\w+|results?|contents?)\\s+to\\s+", Pattern.CASE_INSENSITIVE),
-            Pattern.compile("https?://(?!localhost|127\\.0\\.0\\.1)[\\w.-]+\\.[a-z]{2,}", Pattern.CASE_INSENSITIVE),
-            Pattern.compile("curl\\s+|wget\\s+|nc\\s+-", Pattern.CASE_INSENSITIVE)
-    );
+    public InjectionScanner(ScannerRulesStore store) {
+        this.store = store;
+    }
 
-    /**
-     * Characters used to hide text from human reviewers while leaving it visible to a
-     * model: zero-width spaces, bidirectional overrides, private-use area, and the
-     * Unicode "tag" block used for invisible ASCII smuggling.
-     */
-    private static final Pattern SUSPICIOUS_UNICODE =
-            Pattern.compile("[\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\uFEFF\\uE000-\\uF8FF]|[\\x{E0000}-\\x{E007F}]");
+    /** Convenience factory for unit tests: creates an in-memory store seeded with defaults. */
+    public static InjectionScanner withDefaults() {
+        return new InjectionScanner(new ScannerRulesStore(new ScannerRulesProperties()));
+    }
 
     public record Finding(String rule, String field, String evidence, int weight) {}
 
@@ -80,104 +61,84 @@ public class InjectionScanner {
     /** Scans every model-visible field of a tool definition. */
     public Result scan(Mcp.Tool tool) {
         List<Finding> findings = new ArrayList<>();
-        scanText(findings, "name", tool.name());
-        scanText(findings, "title", tool.title());
-        scanText(findings, "description", tool.description());
-        scanNested(findings, "inputSchema", tool.inputSchema());
-        scanNested(findings, "outputSchema", tool.outputSchema());
-        scanNested(findings, "annotations", tool.annotations());
+        List<ScannerRule> active = store.active();
+        scanText(findings, "name", tool.name(), active);
+        scanText(findings, "title", tool.title(), active);
+        scanText(findings, "description", tool.description(), active);
+        scanNested(findings, "inputSchema", tool.inputSchema(), active);
+        scanNested(findings, "outputSchema", tool.outputSchema(), active);
+        scanNested(findings, "annotations", tool.annotations(), active);
         return new Result(List.copyOf(findings));
     }
 
-    /**
-     * Scans the model-visible metadata of a resource or a prompt.
-     *
-     * <p>Named fields rather than an object, because resources and prompts have different
-     * shapes but the same three strings that reach the model, and a scanner that knows
-     * about every record type would need editing every time the protocol grows one.
-     */
     public Result scan(String name, String title, String description) {
         List<Finding> findings = new ArrayList<>();
-        scanText(findings, "name", name);
-        scanText(findings, "title", title);
-        scanText(findings, "description", description);
+        List<ScannerRule> active = store.active();
+        scanText(findings, "name", name, active);
+        scanText(findings, "title", title, active);
+        scanText(findings, "description", description, active);
         return new Result(List.copyOf(findings));
     }
 
-    /** Scans tool output, which reaches the model just as directly as a description. */
     public Result scanContent(String text) {
         List<Finding> findings = new ArrayList<>();
-        scanText(findings, "toolResult", text);
+        scanText(findings, "toolResult", text, store.active());
         return new Result(List.copyOf(findings));
     }
 
-    /**
-     * JSON Schema keywords whose values are URIs by definition.
-     *
-     * <p>{@code $schema} names the dialect and {@code $id} names the schema. A validator
-     * reads them; a model never does. They were being matched by the exfiltration rule —
-     * which flags any non-local URL — so the {@code http://json-schema.org/draft-07/schema#}
-     * that appears in nearly every real tool definition scored as an exfiltration target.
-     * That is not a tuned threshold, it is a category error: these fields cannot carry an
-     * instruction because nothing reads them as one.
-     *
-     * <p>Deliberately only these two. {@code $ref} is excluded because a reference does
-     * influence what a schema means, and the rest of the schema is scanned as before —
-     * a description nested three levels down is exactly where an attacker would hide.
-     */
-    private static final java.util.Set<String> URI_VALUED_SCHEMA_KEYS =
-            java.util.Set.of("$schema", "$id");
-
-    private void scanNested(List<Finding> findings, String field, Object value) {
+    private void scanNested(List<Finding> findings, String field, Object value,
+                            List<ScannerRule> active) {
         switch (value) {
             case null -> { }
             case Map<?, ?> map -> map.forEach((k, v) -> {
                 String key = String.valueOf(k);
-                scanText(findings, field + "." + key, key);
-                if (URI_VALUED_SCHEMA_KEYS.contains(key) && v instanceof String) {
-                    // Still checked for hidden characters — a homoglyph here would be a
-                    // deliberate act — but not for looking like a URL, which it is.
-                    scanForHiddenCharacters(findings, field + "." + key, (String) v);
+                scanText(findings, field + "." + key, key, active);
+                if (URI_VALUED_SCHEMA_KEYS.contains(key) && v instanceof String s) {
+                    scanForHiddenCharacters(findings, field + "." + key, s, active);
                 } else {
-                    scanNested(findings, field + "." + key, v);
+                    scanNested(findings, field + "." + key, v, active);
                 }
             });
-            case List<?> list -> list.forEach(item -> scanNested(findings, field, item));
-            case String s -> scanText(findings, field, s);
+            case List<?> list -> list.forEach(item -> scanNested(findings, field, item, active));
+            case String s -> scanText(findings, field, s, active);
             default -> { }
         }
     }
 
-    /** The one check that still applies to a machine-read identifier. */
-    private void scanForHiddenCharacters(List<Finding> findings, String field, String text) {
+    private void scanForHiddenCharacters(List<Finding> findings, String field, String text,
+                                         List<ScannerRule> active) {
         if (text == null || text.isBlank()) return;
-        var u = SUSPICIOUS_UNICODE.matcher(text);
-        if (u.find()) {
-            findings.add(new Finding("hidden_unicode", field,
-                    "U+%04X".formatted(text.codePointAt(u.start())), 50));
+        for (ScannerRule rule : active) {
+            if (!ScannerRule.HIDDEN_UNICODE.equals(rule.category())) continue;
+            try {
+                var m = Pattern.compile(rule.pattern()).matcher(text);
+                if (m.find()) {
+                    findings.add(new Finding(rule.category(), field,
+                            "U+%04X".formatted(text.codePointAt(m.start())), rule.weight()));
+                    return;
+                }
+            } catch (PatternSyntaxException ignored) { }
         }
     }
 
-    private void scanText(List<Finding> findings, String field, String text) {
+    private void scanText(List<Finding> findings, String field, String text,
+                          List<ScannerRule> active) {
         if (text == null || text.isBlank()) return;
-
-        for (Pattern p : IMPERATIVES) {
-            var m = p.matcher(text);
-            if (m.find()) findings.add(new Finding("imperative_instruction", field, m.group(), 40));
-        }
-        for (Pattern p : CREDENTIAL_TARGETS) {
-            var m = p.matcher(text);
-            if (m.find()) findings.add(new Finding("credential_target", field, m.group(), 35));
-        }
-        for (Pattern p : EXFILTRATION) {
-            var m = p.matcher(text);
-            if (m.find()) findings.add(new Finding("exfiltration_shape", field, m.group(), 30));
-        }
-        var u = SUSPICIOUS_UNICODE.matcher(text);
-        if (u.find()) {
-            // Report the codepoint, not the character — it is invisible by construction.
-            findings.add(new Finding("hidden_unicode", field,
-                    "U+%04X".formatted(text.codePointAt(u.start())), 50));
+        for (ScannerRule rule : active) {
+            try {
+                Pattern p = Pattern.compile(rule.pattern(),
+                        ScannerRule.HIDDEN_UNICODE.equals(rule.category())
+                                ? 0 : Pattern.CASE_INSENSITIVE);
+                var m = p.matcher(text);
+                if (m.find()) {
+                    String evidence = ScannerRule.HIDDEN_UNICODE.equals(rule.category())
+                            ? "U+%04X".formatted(text.codePointAt(m.start()))
+                            : m.group();
+                    findings.add(new Finding(rule.category(), field, evidence, rule.weight()));
+                }
+            } catch (PatternSyntaxException e) {
+                // A malformed custom rule is skipped, not fatal — the rest still run.
+            }
         }
     }
 }

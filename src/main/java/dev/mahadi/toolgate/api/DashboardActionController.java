@@ -4,6 +4,7 @@ import dev.mahadi.toolgate.audit.AuditLog;
 import dev.mahadi.toolgate.gateway.ApprovalStore;
 import dev.mahadi.toolgate.integrity.DriftStore;
 import dev.mahadi.toolgate.integrity.ToolPinStore;
+import dev.mahadi.toolgate.scanner.ScannerRulesStore;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -48,17 +49,20 @@ public class DashboardActionController {
     private final ToolPinStore pins;
     private final ApprovalStore approvals;
     private final AuditLog audit;
+    private final ScannerRulesStore scannerRules;
 
     public DashboardActionController(OperatorSessions sessions,
                                      dev.mahadi.toolgate.auth.OperatorProperties props,
                                      DriftStore drifts, ToolPinStore pins,
-                                     ApprovalStore approvals, AuditLog audit) {
+                                     ApprovalStore approvals, AuditLog audit,
+                                     ScannerRulesStore scannerRules) {
         this.sessions = sessions;
         this.props = props;
         this.drifts = drifts;
         this.pins = pins;
         this.approvals = approvals;
         this.audit = audit;
+        this.scannerRules = scannerRules;
     }
 
     // ---------------------------------------------------------------- sign in
@@ -205,6 +209,84 @@ public class DashboardActionController {
             case ApprovalStore.Outcome.Unknown ignored -> { }
         }
         return redirectHome();
+        });
+    }
+
+    // ---------------------------------------------------------- scanner rules
+
+    @PostMapping(value = "/toolgate/ui/scanner/rule",
+            consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    public Mono<ResponseEntity<?>> addScannerRule(ServerWebExchange exchange) {
+        return exchange.getFormData().map(form -> {
+            var session = requireSession(exchange);
+            if (session == null || !sessions.csrfValid(session, form.getFirst(OperatorSessions.CSRF_FIELD))) {
+                return forbidden();
+            }
+            String category = form.getFirst("category");
+            String pattern  = form.getFirst("pattern");
+            String weightRaw = form.getFirst("weight");
+            String description = form.getFirst("description");
+
+            if (pattern == null || pattern.isBlank()) return redirectHome();
+            int weight = 30;
+            try { if (weightRaw != null) weight = Math.max(1, Math.min(100, Integer.parseInt(weightRaw))); }
+            catch (NumberFormatException ignored) {}
+
+            // Reject an invalid regex before persisting it — a bad pattern is silently
+            // skipped at scan time, so the admin would add a rule that never fires.
+            try { java.util.regex.Pattern.compile(pattern); }
+            catch (java.util.regex.PatternSyntaxException e) {
+                return redirectHome();
+            }
+
+            var rule = scannerRules.add(
+                    category != null ? category : "imperative_instruction",
+                    pattern, weight,
+                    description != null ? description : "");
+            audit.record("operator", "-", "-", "scanner rule added",
+                    AuditLog.Outcome.APPROVED,
+                    "custom scanner rule added from the dashboard",
+                    List.of("id=" + rule.id(), "category=" + rule.category(),
+                            "weight=" + rule.weight()));
+            return redirectHome();
+        });
+    }
+
+    @PostMapping(value = "/toolgate/ui/scanner/toggle",
+            consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    public Mono<ResponseEntity<?>> toggleScannerRule(ServerWebExchange exchange) {
+        return exchange.getFormData().map(form -> {
+            var session = requireSession(exchange);
+            if (session == null || !sessions.csrfValid(session, form.getFirst(OperatorSessions.CSRF_FIELD))) {
+                return forbidden();
+            }
+            String id = form.getFirst("id");
+            scannerRules.toggle(id).ifPresent(r ->
+                    audit.record("operator", "-", "-", "scanner rule toggled",
+                            AuditLog.Outcome.APPROVED,
+                            "rule " + (r.enabled() ? "enabled" : "disabled") + " from the dashboard",
+                            List.of("id=" + r.id(), "category=" + r.category())));
+            return redirectHome();
+        });
+    }
+
+    @PostMapping(value = "/toolgate/ui/scanner/delete",
+            consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    public Mono<ResponseEntity<?>> deleteScannerRule(ServerWebExchange exchange) {
+        return exchange.getFormData().map(form -> {
+            var session = requireSession(exchange);
+            if (session == null || !sessions.csrfValid(session, form.getFirst(OperatorSessions.CSRF_FIELD))) {
+                return forbidden();
+            }
+            String id = form.getFirst("id");
+            boolean deleted = scannerRules.delete(id);
+            if (deleted) {
+                audit.record("operator", "-", "-", "scanner rule deleted",
+                        AuditLog.Outcome.APPROVED,
+                        "custom scanner rule deleted from the dashboard",
+                        List.of("id=" + id));
+            }
+            return redirectHome();
         });
     }
 

@@ -40,6 +40,9 @@ toolgate:
     file: /var/lib/toolgate/pins.json
     require-secure-permissions: true
 
+  scanner:
+    rules-file: /var/lib/toolgate/scanner-rules.json
+
   audit:
     file: /var/lib/toolgate/audit.jsonl
     fail-closed: false

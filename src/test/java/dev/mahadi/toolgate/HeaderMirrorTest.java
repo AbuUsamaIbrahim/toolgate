@@ -54,7 +54,7 @@ class HeaderMirrorTest {
         props.setServers(new LinkedHashMap<>(Map.of(SERVER, server)));
 
         pins = new ToolPinStore(new InMemoryPinStorage());
-        policy = new PolicyEngine(localPolicy(props), pins, new InjectionScanner(), new DriftStore(), memoryPins());
+        policy = new PolicyEngine(localPolicy(props), pins, InjectionScanner.withDefaults(), new DriftStore(), memoryPins());
     }
 
     /** A tool whose {@code path} parameter asks to be mirrored into {@code header}. */
