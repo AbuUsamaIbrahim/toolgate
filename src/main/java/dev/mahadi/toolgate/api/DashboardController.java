@@ -144,7 +144,11 @@ public class DashboardController {
 
         StringBuilder b = new StringBuilder();
         b.append("<h1>toolgate</h1><div class=\"sub\">")
-                .append(escape(status())).append(" · refreshes every 15s");
+                .append(escape(status()))
+                .append(" · <span id=\"live-badge\" style=\"display:inline-flex;align-items:center;gap:5px;font-size:11px\">")
+                .append("<span id=\"live-dot\" style=\"width:7px;height:7px;border-radius:50%;background:#6b7a90;display:inline-block\"></span>")
+                .append("<span id=\"live-text\" style=\"color:var(--faint)\">connecting…</span>")
+                .append("</span>");
         if (session != null) {
             b.append(" · <form method=\"post\" action=\"/toolgate/logout\" class=\"inline\">")
                     .append(csrfField(csrf))
@@ -168,7 +172,7 @@ public class DashboardController {
 
         return ResponseEntity.ok()
                 .header("Content-Security-Policy",
-                        "default-src 'none'; style-src 'unsafe-inline'; "
+                        "default-src 'none'; style-src 'unsafe-inline' 'nonce-" + nonce + "'; "
                                 + "script-src 'nonce-" + nonce + "'; "
                                 + "connect-src 'self'; "
                                 + "form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
@@ -470,9 +474,26 @@ public class DashboardController {
      */
     private String liveScript(String nonce) {
         return """
+            <style nonce="%s">
+            @keyframes live-pulse {
+              0%%,100%%{opacity:1} 50%%{opacity:.35}
+            }
+            #live-dot.connected { background:#4ade80; animation:live-pulse 2s ease-in-out infinite }
+            #live-dot.error     { background:#f87171; animation:none }
+            </style>
             <script nonce="%s">
             (function() {
+              var dot  = document.getElementById('live-dot');
+              var txt  = document.getElementById('live-text');
+
+              function setStatus(state, label) {
+                if (dot) { dot.className = state; }
+                if (txt) { txt.textContent = label; txt.style.color = state === 'connected' ? 'var(--ok)' : state === 'error' ? 'var(--bad)' : 'var(--faint)'; }
+              }
+
               var es = new EventSource('/toolgate/events');
+
+              es.onopen = function() { setStatus('connected', 'live'); };
 
               es.addEventListener('counts', function(e) {
                 var d = JSON.parse(e.data);
@@ -488,7 +509,10 @@ public class DashboardController {
                 var tmp = document.createElement('tbody');
                 tmp.innerHTML = e.data;
                 var row = tmp.firstChild;
-                if (row) tbody.insertBefore(row, tbody.firstChild);
+                if (row) {
+                  row.style.animation = 'live-pulse 0.6s ease-out 1';
+                  tbody.insertBefore(row, tbody.firstChild);
+                }
                 while (tbody.rows.length > %d) tbody.deleteRow(tbody.rows.length - 1);
               });
 
@@ -503,11 +527,11 @@ public class DashboardController {
               });
 
               es.onerror = function() {
-                // Browser reconnects automatically; nothing to do here.
+                setStatus('error', 'reconnecting…');
               };
             })();
             </script>
-            """.formatted(nonce, AUDIT_PAGE_SIZE);
+            """.formatted(nonce, nonce, AUDIT_PAGE_SIZE);
     }
 
     /**
