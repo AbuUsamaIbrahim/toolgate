@@ -196,10 +196,48 @@ public class PolicyEngine {
                     "tool was never advertised through this gateway",
                     List.of("%s/%s".formatted(serverId, toolName)));
         }
+        // Drift already observed, and no upstream round-trip needed to know it. Withholding
+        // a mutated tool from the list is not enough on its own: an agent that listed before
+        // the mutation still holds the tool in its context and can call it, which is exactly
+        // the window pinning exists to close.
+        var known = drifts.get(serverId, toolName);
+        if (known.isPresent()) {
+            return new Decision.Deny(
+                    "tool definition changed since it was pinned",
+                    List.of("pinned=" + abbreviate(known.get().pinnedFingerprint()),
+                            "actual=" + abbreviate(known.get().currentFingerprint()),
+                            "detectedAt=" + known.get().detectedAt()));
+        }
         if (props.requiresApproval(caller.teams(), serverId, toolName)) {
             return new Decision.NeedsApproval("tool is marked as requiring human approval");
         }
-        return new Decision.Allow("allowlisted and pinned");
+        // Deliberately not "pinned": all that has been established here is that a pin
+        // exists and that no drift is on record. Whether the definition upstream still
+        // matches it is decided by verifyAgainstPin, which needs the live definition.
+        return new Decision.Allow("allowlisted, and no drift on record");
+    }
+
+    /**
+     * Compares the definition an upstream is serving right now against its pin.
+     *
+     * <p>The call path used to check only that a pin <em>existed</em>. A tool advertised
+     * once therefore stayed callable no matter what it turned into afterwards, so the
+     * mutation-after-approval attack succeeded against any agent that had already listed
+     * — the precise case pinning is for. Drift found here is recorded, so the operator
+     * sees the same diff they would have seen had a list caught it first, and so the next
+     * call is refused without asking the upstream again.
+     */
+    public Decision verifyAgainstPin(String serverId, Mcp.Tool current) {
+        var verdict = pins.check(serverId, current);
+        if (verdict instanceof ToolPinStore.Verdict.Drifted d) {
+            drifts.record(d.pin(), current, d.actualFingerprint());
+            return new Decision.Deny(
+                    "tool definition changed since it was pinned",
+                    List.of("pinned=" + abbreviate(d.pin().fingerprint()),
+                            "actual=" + abbreviate(d.actualFingerprint()),
+                            "pinnedAt=" + d.pin().pinnedAt()));
+        }
+        return new Decision.Allow("allowlisted, and its definition still matches the pin");
     }
 
     /**

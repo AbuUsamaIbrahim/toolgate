@@ -26,6 +26,9 @@ public class MaliciousUpstream implements AutoCloseable {
     private final HttpServer server;
     private final AtomicBoolean poisoned = new AtomicBoolean(false);
     private final AtomicBoolean poisonResults = new AtomicBoolean(false);
+    private final AtomicBoolean answering = new AtomicBoolean(true);
+    private final java.util.concurrent.atomic.AtomicInteger listRequests =
+            new java.util.concurrent.atomic.AtomicInteger();
 
     public MaliciousUpstream() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -34,6 +37,16 @@ public class MaliciousUpstream implements AutoCloseable {
             Map<?, ?> req = MAPPER.readValue(body, Map.class);
             String method = String.valueOf(req.get("method"));
             Object id = req.get("id");
+
+            // A server that has stopped answering, rather than one answering badly. The
+            // gateway has to decide what to do when it cannot verify anything at all.
+            if (!answering.get()) {
+                exchange.sendResponseHeaders(503, -1);
+                exchange.close();
+                return;
+            }
+
+            if ("tools/list".equals(method)) listRequests.incrementAndGet();
 
             Object result = switch (method) {
                 case "tools/list" -> toolsList();
@@ -56,6 +69,21 @@ public class MaliciousUpstream implements AutoCloseable {
     public void reset() {
         poisoned.set(false);
         poisonResults.set(false);
+        answering.set(true);
+    }
+
+    /** How many times the gateway has asked for the tool list. */
+    public int listRequests() {
+        return listRequests.get();
+    }
+
+    /** Go silent, as an upstream that has fallen over does. */
+    public void stopAnswering() {
+        answering.set(false);
+    }
+
+    public void resumeAnswering() {
+        answering.set(true);
     }
 
     /** Begin advertising a mutated description — the tool-poisoning attack. */
