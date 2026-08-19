@@ -1,8 +1,10 @@
 package dev.mahadi.toolgate.protocol;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -46,8 +48,42 @@ public final class Mcp {
             Map<String, Object> params,
             Map<String, Object> _meta) {
 
+        /**
+         * Not part of the JSON-RPC envelope.
+         *
+         * <p>Without this the accessor serialised as {@code "notification": false}, and a
+         * server validating the envelope against the specification's schema — which the
+         * official SDK does — rejected the whole message and answered nothing at all.
+         */
+        @JsonIgnore
         public boolean isNotification() {
             return id == null;
+        }
+
+        /**
+         * This request with {@code _meta} moved inside {@code params}, which is where the
+         * specification puts it.
+         *
+         * <p>It was being written at the top level of the envelope. A strict server treats
+         * an unknown top-level member as a malformed request and discards it silently, so
+         * every call to a spec-compliant upstream timed out with nothing on the wire to
+         * explain why. Transports call this immediately before serialising.
+         */
+        public Request forWire() {
+            if (_meta == null || _meta.isEmpty()) {
+                return new Request(jsonrpc, id, method, params, null);
+            }
+            Map<String, Object> merged = new LinkedHashMap<>();
+            if (params != null) merged.putAll(params);
+
+            // A params._meta already present wins on conflict: it was set deliberately by
+            // the caller, whereas this one is the transport's own protocol-version stamp.
+            Map<String, Object> meta = new LinkedHashMap<>(_meta);
+            if (merged.get("_meta") instanceof Map<?, ?> existing) {
+                existing.forEach((k, v) -> meta.put(String.valueOf(k), v));
+            }
+            merged.put("_meta", meta);
+            return new Request(jsonrpc, id, method, merged, null);
         }
 
         /** Tool name from a {@code tools/call}, or null if absent or malformed. */

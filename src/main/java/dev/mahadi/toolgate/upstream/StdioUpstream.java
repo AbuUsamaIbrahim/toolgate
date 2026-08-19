@@ -178,7 +178,7 @@ public class StdioUpstream implements UpstreamTransport {
         try {
             // Compact, single line. writeValueAsString never emits newlines for these types,
             // but the newline we append is the frame delimiter and must be the only one.
-            String json = mapper.writeValueAsString(request);
+            String json = mapper.writeValueAsString(request.forWire());
             synchronized (stdin) {
                 stdin.write(json);
                 stdin.write('\n');

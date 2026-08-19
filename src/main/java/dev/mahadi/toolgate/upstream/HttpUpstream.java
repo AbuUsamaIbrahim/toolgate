@@ -94,7 +94,7 @@ public class HttpUpstream implements UpstreamTransport {
 
         boolean longLived = Mcp.METHOD_SUBSCRIPTIONS_LISTEN.equals(request.method());
 
-        Mono<Mcp.Response> exchange = spec.bodyValue(request).exchangeToMono(response -> {
+        Mono<Mcp.Response> exchange = spec.bodyValue(request.forWire()).exchangeToMono(response -> {
             MediaType contentType = response.headers().contentType().orElse(MediaType.APPLICATION_JSON);
             if (MediaType.TEXT_EVENT_STREAM.isCompatibleWith(contentType)) {
                 return consumeStream(response.bodyToFlux(SSE_TYPE));

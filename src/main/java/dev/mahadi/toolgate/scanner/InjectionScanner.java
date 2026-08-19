@@ -111,16 +111,50 @@ public class InjectionScanner {
         return new Result(List.copyOf(findings));
     }
 
+    /**
+     * JSON Schema keywords whose values are URIs by definition.
+     *
+     * <p>{@code $schema} names the dialect and {@code $id} names the schema. A validator
+     * reads them; a model never does. They were being matched by the exfiltration rule —
+     * which flags any non-local URL — so the {@code http://json-schema.org/draft-07/schema#}
+     * that appears in nearly every real tool definition scored as an exfiltration target.
+     * That is not a tuned threshold, it is a category error: these fields cannot carry an
+     * instruction because nothing reads them as one.
+     *
+     * <p>Deliberately only these two. {@code $ref} is excluded because a reference does
+     * influence what a schema means, and the rest of the schema is scanned as before —
+     * a description nested three levels down is exactly where an attacker would hide.
+     */
+    private static final java.util.Set<String> URI_VALUED_SCHEMA_KEYS =
+            java.util.Set.of("$schema", "$id");
+
     private void scanNested(List<Finding> findings, String field, Object value) {
         switch (value) {
             case null -> { }
             case Map<?, ?> map -> map.forEach((k, v) -> {
-                scanText(findings, field + "." + k, String.valueOf(k));
-                scanNested(findings, field + "." + k, v);
+                String key = String.valueOf(k);
+                scanText(findings, field + "." + key, key);
+                if (URI_VALUED_SCHEMA_KEYS.contains(key) && v instanceof String) {
+                    // Still checked for hidden characters — a homoglyph here would be a
+                    // deliberate act — but not for looking like a URL, which it is.
+                    scanForHiddenCharacters(findings, field + "." + key, (String) v);
+                } else {
+                    scanNested(findings, field + "." + key, v);
+                }
             });
             case List<?> list -> list.forEach(item -> scanNested(findings, field, item));
             case String s -> scanText(findings, field, s);
             default -> { }
+        }
+    }
+
+    /** The one check that still applies to a machine-read identifier. */
+    private void scanForHiddenCharacters(List<Finding> findings, String field, String text) {
+        if (text == null || text.isBlank()) return;
+        var u = SUSPICIOUS_UNICODE.matcher(text);
+        if (u.find()) {
+            findings.add(new Finding("hidden_unicode", field,
+                    "U+%04X".formatted(text.codePointAt(u.start())), 50));
         }
     }
 
