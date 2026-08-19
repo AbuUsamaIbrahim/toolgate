@@ -33,17 +33,25 @@ public class DriftStore {
     }
 
     private final Map<String, Drift> drifts = new ConcurrentHashMap<>();
+    private dev.mahadi.toolgate.api.DashboardEventBus eventBus;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setEventBus(dev.mahadi.toolgate.api.DashboardEventBus eventBus) {
+        this.eventBus = eventBus;
+    }
 
     public void record(ToolPinStore.Pin pin, Mcp.Tool current, String currentFingerprint) {
         drifts.put(pin.serverId() + "/" + pin.toolName(), new Drift(
                 pin.serverId(), pin.toolName(), Instant.now(),
                 pin.fingerprint(), currentFingerprint,
                 pin.definition(), current));
+        if (eventBus != null) eventBus.publish(new dev.mahadi.toolgate.api.DashboardEvent.DriftChanged());
     }
 
     /** Cleared when the upstream reverts, so the queue reflects only live problems. */
     public void clear(String serverId, String toolName) {
         drifts.remove(serverId + "/" + toolName);
+        if (eventBus != null) eventBus.publish(new dev.mahadi.toolgate.api.DashboardEvent.DriftChanged());
     }
 
     public Optional<Drift> get(String serverId, String toolName) {

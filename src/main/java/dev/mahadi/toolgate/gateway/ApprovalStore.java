@@ -69,6 +69,12 @@ public class ApprovalStore {
 
     private final ApprovalProperties props;
     private final ObjectMapper mapper;
+    private dev.mahadi.toolgate.api.DashboardEventBus eventBus;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setEventBus(dev.mahadi.toolgate.api.DashboardEventBus eventBus) {
+        this.eventBus = eventBus;
+    }
 
     public ApprovalStore(ApprovalProperties props, ObjectMapper mapper) {
         this.props = props;
@@ -80,6 +86,7 @@ public class ApprovalStore {
                 reason, Instant.now());
         pending.put(p.id(), p);
         persist();
+        if (eventBus != null) eventBus.publish(new dev.mahadi.toolgate.api.DashboardEvent.ApprovalsChanged());
         return p;
     }
 
@@ -132,6 +139,7 @@ public class ApprovalStore {
         persist();
         log.info("Approval {} for {}/{} granted to {} by {}",
                 id, p.serverId(), p.tool(), p.caller(), approver);
+        if (eventBus != null) eventBus.publish(new dev.mahadi.toolgate.api.DashboardEvent.ApprovalsChanged());
         return new Outcome.Granted(p, approver);
     }
 
@@ -147,6 +155,7 @@ public class ApprovalStore {
         p.ifPresent(x -> {
             persist();
             log.info("Approval {} for {}/{} denied by {}", id, x.serverId(), x.tool(), deniedBy);
+            if (eventBus != null) eventBus.publish(new dev.mahadi.toolgate.api.DashboardEvent.ApprovalsChanged());
         });
         return p;
     }

@@ -10,9 +10,14 @@ import dev.mahadi.toolgate.scanner.ScannerRule;
 import dev.mahadi.toolgate.scanner.ScannerRulesStore;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
+import reactor.core.publisher.Flux;
 
+import java.security.SecureRandom;
+import java.time.Duration;
+import java.util.Base64;
 import java.util.List;
 
 import static dev.mahadi.toolgate.api.DashboardRenderer.*;
@@ -39,11 +44,7 @@ import static dev.mahadi.toolgate.api.DashboardRenderer.*;
 @RestController
 public class DashboardController {
 
-    /**
-     * How often the console reloads itself. Only this page opts in — see
-     * {@link DashboardRenderer#page(String, String, int)} for why that matters.
-     */
-    private static final int REFRESH_SECONDS = 15;
+    // No meta-refresh — the SSE stream keeps the page live without full reloads.
 
     private final AuditLog audit;
     private final DriftStore drifts;
@@ -54,12 +55,14 @@ public class DashboardController {
     private final OperatorSessions sessions;
     private final dev.mahadi.toolgate.advisor.DriftAdvisor advisor;
     private final ScannerRulesStore scannerRules;
+    private final DashboardEventBus eventBus;
+    private static final SecureRandom RANDOM = new SecureRandom();
 
     public DashboardController(AuditLog audit, DriftStore drifts, ApprovalStore approvals,
                                ToolPinStore pins, SurfacePinStore surfacePins,
                                BundleStore bundles, OperatorSessions sessions,
                                dev.mahadi.toolgate.advisor.DriftAdvisor advisor,
-                               ScannerRulesStore scannerRules) {
+                               ScannerRulesStore scannerRules, DashboardEventBus eventBus) {
         this.sessions = sessions;
         this.advisor = advisor;
         this.audit = audit;
@@ -69,9 +72,59 @@ public class DashboardController {
         this.surfacePins = surfacePins;
         this.bundles = bundles;
         this.scannerRules = scannerRules;
+        this.eventBus = eventBus;
     }
 
     private static final int AUDIT_PAGE_SIZE = 20;
+
+    // ---------------------------------------------------------------- SSE stream
+
+    /**
+     * Live event stream for connected operator browsers.
+     *
+     * <p>Sends an initial counts snapshot so the browser sees current state immediately,
+     * then pushes targeted updates as things change. A heartbeat comment every 25 s keeps
+     * the connection alive through proxies that close idle streams.
+     */
+    @GetMapping(value = "/toolgate/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> events(org.springframework.web.server.ServerWebExchange exchange) {
+        var cookie = exchange.getRequest().getCookies().getFirst(OperatorSessions.COOKIE);
+        var session = cookie == null ? null : sessions.lookup(cookie.getValue()).orElse(null);
+        String csrf = session == null ? null : session.csrfToken();
+
+        Flux<ServerSentEvent<String>> initial = Flux.just(countsEvent());
+
+        Flux<ServerSentEvent<String>> updates = eventBus.subscribe()
+                .flatMapIterable(event -> switch (event) {
+                    case DashboardEvent.AuditEntryAdded a -> List.of(
+                            ServerSentEvent.<String>builder()
+                                    .event("audit-row").data(auditRow(a.entry())).build());
+                    case DashboardEvent.ApprovalsChanged ignored -> List.of(
+                            countsEvent(),
+                            ServerSentEvent.<String>builder()
+                                    .event("approvals-html")
+                                    .data(approvalSection(csrf)).build());
+                    case DashboardEvent.DriftChanged ignored -> List.of(
+                            countsEvent(),
+                            ServerSentEvent.<String>builder()
+                                    .event("drift-html")
+                                    .data(driftSection(csrf)).build());
+                });
+
+        Flux<ServerSentEvent<String>> heartbeat = Flux.interval(Duration.ofSeconds(25))
+                .map(i -> ServerSentEvent.<String>builder().comment("heartbeat").build());
+
+        return Flux.merge(initial, updates, heartbeat);
+    }
+
+    private ServerSentEvent<String> countsEvent() {
+        return ServerSentEvent.<String>builder().event("counts")
+                .data("{\"drift\":" + drifts.all().size()
+                        + ",\"approvals\":" + approvals.outstanding().size() + "}")
+                .build();
+    }
+
+    // ---------------------------------------------------------------- dashboard page
 
     @GetMapping(value = "/toolgate", produces = MediaType.TEXT_HTML_VALUE)
     public ResponseEntity<String> dashboard(org.springframework.web.server.ServerWebExchange exchange) {
@@ -99,22 +152,29 @@ public class DashboardController {
         }
         b.append("</div>");
 
+        // Nonce lets the live-update script run while keeping the policy tight. A random
+        // nonce per request means an injected <script> tag — which cannot know the nonce —
+        // will not execute even if it somehow reaches the page.
+        byte[] nonceBytes = new byte[18];
+        RANDOM.nextBytes(nonceBytes);
+        String nonce = Base64.getEncoder().encodeToString(nonceBytes);
+
         b.append(cards());
-        b.append(driftSection(csrf));
-        b.append(approvalSection(csrf));
+        b.append("<div id=\"drift-section\">").append(driftSection(csrf)).append("</div>");
+        b.append("<div id=\"approvals-section\">").append(approvalSection(csrf)).append("</div>");
         b.append(scannerRulesSection(csrf));
         b.append(recentRefusals(auditPage));
+        b.append(liveScript(nonce));
 
         return ResponseEntity.ok()
-                // No script at all, from anywhere. The page renders text an attacker wrote,
-                // for the person holding a token that can approve anything, so the policy
-                // is the belt to the escaping's braces.
                 .header("Content-Security-Policy",
-                        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
-                                + "frame-ancestors 'none'; base-uri 'none'")
+                        "default-src 'none'; style-src 'unsafe-inline'; "
+                                + "script-src 'nonce-" + nonce + "'; "
+                                + "connect-src 'self'; "
+                                + "form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
                 .header("X-Content-Type-Options", "nosniff")
                 .header("Referrer-Policy", "no-referrer")
-                .body(page("Dashboard", b.toString(), REFRESH_SECONDS));
+                .body(DashboardRenderer.page("Dashboard", b.toString(), 0, nonce));
     }
 
     private String status() {
@@ -141,8 +201,8 @@ public class DashboardController {
             <div class="cards">
               <div class="card"><div class="k">Policy</div><div class="v %s">%s</div></div>
               <div class="card"><div class="k">Bundle sequence</div><div class="v dim">%s</div></div>
-              <div class="card"><div class="k">Drift to review</div><div class="v %s">%d</div></div>
-              <div class="card"><div class="k">Awaiting approval</div><div class="v %s">%d</div></div>
+              <div class="card"><div class="k">Drift to review</div><div id="card-drift" class="v %s">%d</div></div>
+              <div class="card"><div class="k">Awaiting approval</div><div id="card-approvals" class="v %s">%d</div></div>
               <div class="card"><div class="k">Pinned definitions</div><div class="v dim">%d</div></div>
             </div>
             """.formatted(
@@ -375,6 +435,81 @@ public class DashboardController {
         return b.toString();
     }
 
+    /** Renders one audit entry as a `<tr>` for SSE push and initial table render. */
+    String auditRow(AuditLog.Entry e) {
+        String pill = switch (e.outcome()) {
+            case DENIED -> "p-bad";
+            case APPROVAL_REQUIRED -> "p-warn";
+            case FAILED -> "p-warn";
+            default -> "p-ok";
+        };
+        StringBuilder why = new StringBuilder();
+        why.append("<span class=\"mono\">").append(escape(e.caller()))
+           .append("</span> tried to call <span class=\"mono\">")
+           .append(escape(e.serverId())).append('/').append(escape(e.tool()))
+           .append("</span><br><span class=\"dim\">").append(escape(e.reason()))
+           .append("</span>");
+        if (!e.evidence().isEmpty()) {
+            why.append("<br><span class=\"dim\" style=\"font-size:0.85em\">")
+               .append(escape(String.join(" · ", e.evidence()))).append("</span>");
+        }
+        return "<tr><td class=\"dim mono\">" + escape(ago(e.at()))
+                + "</td><td><span class=\"pill " + pill + "\">"
+                + escape(e.outcome().name()) + "</span></td>"
+                + "<td class=\"mono\">" + escape(e.serverId()) + '/' + escape(e.tool())
+                + "</td><td>" + why + "</td></tr>";
+    }
+
+    /**
+     * The inline script that keeps the page live.
+     *
+     * <p>Opens an EventSource to /toolgate/events and patches the DOM on each event rather
+     * than replacing the whole page. The nonce is matched against the CSP header so only
+     * this exact script block can execute — any injected markup that reaches the page
+     * cannot run without a valid nonce.
+     */
+    private String liveScript(String nonce) {
+        return """
+            <script nonce="%s">
+            (function() {
+              var es = new EventSource('/toolgate/events');
+
+              es.addEventListener('counts', function(e) {
+                var d = JSON.parse(e.data);
+                var drift = document.getElementById('card-drift');
+                var approvals = document.getElementById('card-approvals');
+                if (drift) drift.textContent = d.drift;
+                if (approvals) approvals.textContent = d.approvals;
+              });
+
+              es.addEventListener('audit-row', function(e) {
+                var tbody = document.getElementById('audit-tbody');
+                if (!tbody) return;
+                var tmp = document.createElement('tbody');
+                tmp.innerHTML = e.data;
+                var row = tmp.firstChild;
+                if (row) tbody.insertBefore(row, tbody.firstChild);
+                while (tbody.rows.length > %d) tbody.deleteRow(tbody.rows.length - 1);
+              });
+
+              es.addEventListener('approvals-html', function(e) {
+                var el = document.getElementById('approvals-section');
+                if (el) el.innerHTML = e.data;
+              });
+
+              es.addEventListener('drift-html', function(e) {
+                var el = document.getElementById('drift-section');
+                if (el) el.innerHTML = e.data;
+              });
+
+              es.onerror = function() {
+                // Browser reconnects automatically; nothing to do here.
+              };
+            })();
+            </script>
+            """.formatted(nonce, AUDIT_PAGE_SIZE);
+    }
+
     /**
      * Refusals only, paginated.
      *
@@ -400,37 +535,12 @@ public class DashboardController {
             return b.append("<div class=\"empty\">Nothing has been refused.</div>").toString();
         }
 
-        b.append("<table><tr><th>When</th><th></th><th>What</th><th>Why</th></tr>");
+        b.append("<table><tr><th>When</th><th></th><th>What</th><th>Why</th></tr>")
+         .append("<tbody id=\"audit-tbody\">");
         for (var e : refusals) {
-            String pill = switch (e.outcome()) {
-                case DENIED -> "p-bad";
-                case APPROVAL_REQUIRED -> "p-warn";
-                case FAILED -> "p-warn";
-                default -> "p-ok";
-            };
-            // Build a human-readable explanation: what the caller was trying to do,
-            // the policy reason, and any evidence the gateway recorded.
-            StringBuilder why = new StringBuilder();
-            why.append("<span class=\"mono\">").append(escape(e.caller()))
-               .append("</span> tried to call <span class=\"mono\">")
-               .append(escape(e.serverId())).append('/').append(escape(e.tool()))
-               .append("</span><br><span class=\"dim\">").append(escape(e.reason()))
-               .append("</span>");
-            if (!e.evidence().isEmpty()) {
-                why.append("<br><span class=\"dim\" style=\"font-size:0.85em\">");
-                why.append(escape(String.join(" · ", e.evidence())));
-                why.append("</span>");
-            }
-
-            b.append("<tr><td class=\"dim mono\">").append(escape(ago(e.at())))
-                    .append("</td><td><span class=\"pill ").append(pill).append("\">")
-                    .append(escape(e.outcome().name())).append("</span></td>")
-                    .append("<td class=\"mono\">").append(escape(e.serverId()))
-                    .append('/').append(escape(e.tool()))
-                    .append("</td><td>").append(why)
-                    .append("</td></tr>");
+            b.append(auditRow(e));
         }
-        b.append("</table>");
+        b.append("</tbody></table>");
 
         // Pagination controls
         b.append("<div class=\"pagination\">");

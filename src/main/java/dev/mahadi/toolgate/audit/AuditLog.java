@@ -32,6 +32,12 @@ public class AuditLog {
     private final Deque<Entry> entries = new ArrayDeque<>(CAPACITY);
 
     private final List<AuditSink> sinks;
+    private dev.mahadi.toolgate.api.DashboardEventBus eventBus;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setEventBus(dev.mahadi.toolgate.api.DashboardEventBus eventBus) {
+        this.eventBus = eventBus;
+    }
 
     public AuditLog(List<AuditSink> sinks) {
         // Ordered: the durable sink runs first, so a deployment configured to fail closed
@@ -74,6 +80,10 @@ public class AuditLog {
         log.info("outcome={} action={} caller={} tool={}/{} reason=\"{}\" evidence={}",
                 entry.outcome(), entry.action(), entry.caller(),
                 entry.serverId(), entry.tool(), entry.reason(), entry.evidence());
+
+        if (eventBus != null && entry.outcome() != Outcome.ALLOWED) {
+            eventBus.publish(new dev.mahadi.toolgate.api.DashboardEvent.AuditEntryAdded(entry));
+        }
     }
 
     public void record(String caller, String serverId, String tool, String action,

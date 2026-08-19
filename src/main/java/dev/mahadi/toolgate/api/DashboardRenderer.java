@@ -95,23 +95,22 @@ public final class DashboardRenderer {
      * is making an argument it would not accept from anyone else.
      */
     public static String page(String title, String body) {
-        return page(title, body, 0);
+        return page(title, body, 0, null);
+    }
+
+    public static String page(String title, String body, int refreshSeconds) {
+        return page(title, body, refreshSeconds, null);
     }
 
     /**
-     * The page shell, with an optional auto-refresh.
+     * The page shell.
      *
-     * <p>Refreshing defaults to off, and pages opt in. It used to be unconditional, which
-     * was fine for the dashboard and quietly broken everywhere else: the sign-in form
-     * inherited it too, so the browser reloaded the page — and discarded the half-typed
-     * token — every fifteen seconds. Anyone typing a credential by hand, or waiting on a
-     * password manager, lost it mid-entry. A console that reloads while you are
-     * authenticating to it is not a console you can get into.
-     *
-     * <p>Only a browser could find that. Every test and every {@code curl} fetched the page
-     * once and read the markup, which is exactly the usage a meta refresh does not affect.
+     * <p>The {@code nonce} parameter, when set, allows exactly one inline script block
+     * carrying the matching nonce attribute to execute. It is generated per-request so an
+     * injected script tag — which cannot know the nonce — cannot run even if it reaches
+     * the page.
      */
-    public static String page(String title, String body, int refreshSeconds) {
+    public static String page(String title, String body, int refreshSeconds, String nonce) {
         String refresh = refreshSeconds > 0
                 ? "<meta http-equiv=\"refresh\" content=\"" + refreshSeconds + "\">\n"
                 : "";
