@@ -1089,7 +1089,19 @@ toolgate:
 ```
 
 The key is read from the named environment variable and there is deliberately no setter for
-it, so it cannot be committed to a config file by accident. Choosing a provider does not
+it, so it cannot be committed to a config file by accident. On macOS, keep it in the
+Keychain rather than a dotfile — encrypted at rest, and `security` prompts for the value so
+it never reaches your shell history:
+
+```
+security add-generic-password -a "$USER" -s toolgate-deepseek -w
+DEEPSEEK_API_KEY=$(security find-generic-password -a "$USER" -s toolgate-deepseek -w) \
+  java -jar target/toolgate.jar
+```
+
+`demo/advisor/real-provider-check.sh` exercises the whole path against a real provider this
+way and reports what came back, whether the page blocked, and whether anything the model
+returned became live markup. Choosing a provider does not
 change the trust model: whatever comes back is escaped, cannot act, and appears beside the
 diff rather than instead of it.
 

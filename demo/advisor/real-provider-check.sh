@@ -7,10 +7,22 @@
 # a leaked value. Everything this script prints is derived from the response, not the
 # request.
 #
-# Usage:  demo/advisor/real-provider-check.sh [key-file]
+# The key comes from the macOS Keychain by default, which is strictly better than a file:
+# it is encrypted at rest, unlocked with the login session, and never readable by a stray
+# `cat` of the home directory. Add it once, interactively, so the value never appears in a
+# command line or in shell history:
+#
+#     security add-generic-password -a "$USER" -s toolgate-deepseek -w
+#
+# (with -w and no value, `security` prompts for it — nothing is echoed)
+#
+# Usage:  demo/advisor/real-provider-check.sh              # Keychain, service toolgate-deepseek
+#         KEY_SOURCE=file demo/advisor/real-provider-check.sh [key-file]
 #
 set -uo pipefail
 
+KEY_SOURCE="${KEY_SOURCE:-keychain}"
+KEY_SERVICE="${KEY_SERVICE:-toolgate-deepseek}"
 KEY_FILE="${1:-$HOME/.deepseek-key}"
 ENDPOINT="${ENDPOINT:-https://api.deepseek.com/chat/completions}"
 MODEL="${MODEL:-deepseek-chat}"
@@ -23,12 +35,29 @@ fail() { printf '  FAIL  %s\n' "$1"; exit 1; }
 ok()   { printf '  ok    %s\n' "$1"; }
 
 echo "== preflight =="
-[ -f "$KEY_FILE" ] || fail "no key file at $KEY_FILE"
-MODE=$(stat -f %Lp "$KEY_FILE" 2>/dev/null || stat -c %a "$KEY_FILE")
-[ "$MODE" = "600" ] || echo "  warn  $KEY_FILE is mode $MODE, expected 600"
-BYTES=$(wc -c < "$KEY_FILE" | tr -d ' ')
-[ "$BYTES" -gt 8 ] || fail "key file looks empty ($BYTES bytes)"
-ok "key file present, $BYTES bytes, mode $MODE"
+# read_key writes to stdout and is only ever consumed by a command substitution that feeds
+# an environment variable — the value is never printed, logged, or passed as an argument.
+read_key() {
+  if [ "$KEY_SOURCE" = "keychain" ]; then
+    security find-generic-password -a "$USER" -s "$KEY_SERVICE" -w 2>/dev/null
+  else
+    cat "$KEY_FILE"
+  fi
+}
+
+if [ "$KEY_SOURCE" = "keychain" ]; then
+  BYTES=$(read_key | wc -c | tr -d ' ')
+  [ "$BYTES" -gt 8 ] || fail "no Keychain item '$KEY_SERVICE' for $USER — add it with:
+          security add-generic-password -a \"\$USER\" -s $KEY_SERVICE -w"
+  ok "key found in Keychain (service $KEY_SERVICE, $BYTES bytes)"
+else
+  [ -f "$KEY_FILE" ] || fail "no key file at $KEY_FILE"
+  MODE=$(stat -f %Lp "$KEY_FILE" 2>/dev/null || stat -c %a "$KEY_FILE")
+  [ "$MODE" = "600" ] || echo "  warn  $KEY_FILE is mode $MODE, expected 600"
+  BYTES=$(wc -c < "$KEY_FILE" | tr -d ' ')
+  [ "$BYTES" -gt 8 ] || fail "key file looks empty ($BYTES bytes)"
+  ok "key file present, $BYTES bytes, mode $MODE"
+fi
 [ -f "$JAR" ] || fail "no jar — run: mvn -DskipTests clean package"
 ok "jar present"
 [ -n "$CONFIG" ] || fail "set CONFIG=<dir with application.yml>"
@@ -53,7 +82,7 @@ rm -f "$CONFIG"/pins.json "$CONFIG"/audit.jsonl "$CONFIG"/approvals.json
 
 # The key enters the JVM as an environment variable read from the file, so it appears in
 # neither this script's argv nor the JVM's.
-DEEPSEEK_API_KEY="$(cat "$KEY_FILE")" \
+DEEPSEEK_API_KEY="$(read_key)" \
   "$JAVA_HOME/bin/java" -jar "$JAR" \
   --spring.config.additional-location="file:$CONFIG/" --server.port=$PORT \
   --toolgate.advisor.enabled=true \
