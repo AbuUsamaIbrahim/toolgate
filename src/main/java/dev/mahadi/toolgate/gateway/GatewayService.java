@@ -47,6 +47,13 @@ public class GatewayService {
      */
     public static final String NS = "__";
 
+    /**
+     * What the gateway calls itself in a handshake. One definition, because the version
+     * appeared in two payloads and had already drifted a minor release behind the jar.
+     */
+    private static final String SERVER_NAME = "toolgate";
+    private static final String SERVER_VERSION = "0.2.0";
+
     private final ToolPolicyProperties props;
     private final PolicyEngine policy;
     private final UpstreamClient upstream;
@@ -58,6 +65,7 @@ public class GatewayService {
     private final SurfaceRouter router;
     private final SubscriptionRegistry subscriptions;
     private final NotificationGate gate;
+    private final dev.mahadi.toolgate.integrity.PinProperties pinProps;
     private final ObjectMapper mapper;
 
     public GatewayService(ToolPolicyProperties props, PolicyEngine policy,
@@ -65,6 +73,7 @@ public class GatewayService {
                           ApprovalStore approvals, AuditLog audit,
                           Notifier notifier, SlackNotifier slack, SurfaceRouter router,
                           SubscriptionRegistry subscriptions, NotificationGate gate,
+                          dev.mahadi.toolgate.integrity.PinProperties pinProps,
                           ObjectMapper mapper) {
         this.props = props;
         this.policy = policy;
@@ -77,11 +86,13 @@ public class GatewayService {
         this.router = router;
         this.subscriptions = subscriptions;
         this.gate = gate;
+        this.pinProps = pinProps;
         this.mapper = mapper;
     }
 
     public Mono<Mcp.Response> handle(AccessToken caller, Mcp.Request request) {
         return switch (request.method()) {
+            case Mcp.METHOD_INITIALIZE -> initialize(request);
             case Mcp.METHOD_DISCOVER -> discover(request);
             case Mcp.METHOD_TOOLS_LIST -> toolsList(caller, request);
             case Mcp.METHOD_TOOLS_CALL -> toolsCall(caller, request);
@@ -98,12 +109,46 @@ public class GatewayService {
         };
     }
 
+    /**
+     * The handshake. Answered by the gateway itself, never forwarded.
+     *
+     * <p>This is the first message any client sends, so until it existed no real client
+     * could reach the gateway at all — over either transport. Nothing caught it because
+     * the demo and the test suite both post {@code tools/list} directly, and a client
+     * written alongside a server never asks it anything a client written elsewhere would.
+     *
+     * <p>The version is negotiated rather than asserted, and capabilities describe what
+     * the gateway will proxy — not what any upstream happens to implement, which it
+     * cannot know before an upstream is asked.
+     */
+    private Mono<Mcp.Response> initialize(Mcp.Request request) {
+        Object requested = request.params() == null ? null : request.params().get("protocolVersion");
+        String version = Mcp.negotiateProtocolVersion(
+                requested == null ? null : String.valueOf(requested));
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("protocolVersion", version);
+        result.put("capabilities", Map.of(
+                "tools", Map.of("listChanged", false),
+                "resources", Map.of("subscribe", false, "listChanged", false),
+                "prompts", Map.of("listChanged", false)));
+        result.put("serverInfo", Map.of("name", SERVER_NAME, "version", SERVER_VERSION));
+        // Said to the model, once, in the place the protocol reserves for it: what it is
+        // talking to, and why a tool it expected may simply not be there.
+        result.put("instructions",
+                "Tools reach you through a policy gateway. A tool that was refused is "
+                + "absent from the list rather than failing when called, so treat the "
+                + "advertised set as the complete set. Refusals are recorded for an "
+                + "operator, not addressed to you, and cannot be appealed by retrying.");
+        return Mono.just(Mcp.Response.ok(request.id(), result));
+    }
+
     /** The gateway answers discovery itself; it is the server the agent is talking to. */
     private Mono<Mcp.Response> discover(Mcp.Request request) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("resultType", "complete");
         result.put("protocolVersions", List.of(Mcp.PROTOCOL_VERSION));
-        result.put("serverInfo", Map.of("name", "toolgate", "version", "0.1.0"));
+        result.put("serverInfo", Map.of("name", SERVER_NAME, "version", SERVER_VERSION));
         result.put("capabilities", Map.of("tools", Map.of("listChanged", false)));
         return Mono.just(Mcp.Response.ok(request.id(), result));
     }
@@ -838,11 +883,80 @@ public class GatewayService {
                         Map.of("approvalId", p.id())));
             }
             case PolicyEngine.Decision.Allow a -> {
-                audit.record(caller.subject(), serverId, toolName, "tools/call",
-                        AuditLog.Outcome.ALLOWED, a.reason(), List.of());
-                return forwardCall(caller, serverId, toolName, request);
+                return verifyPinThenForward(caller, serverId, toolName, request, a);
             }
         }
+    }
+
+    /**
+     * Confirms the upstream is still serving the definition that was pinned, then calls it.
+     *
+     * <p>Skipping this was the gap: {@code tools/list} withheld a mutated tool from the
+     * model's context while {@code tools/call} kept forwarding to it, so an agent holding
+     * the pre-mutation definition could still invoke whatever the tool had become. The
+     * name-only checks have already run; what is missing at this point is the one fact
+     * that requires asking the upstream.
+     *
+     * <p>Fails closed. An upstream that cannot be reached cannot be verified, and calling
+     * it anyway would mean the check is skipped exactly when a server is misbehaving.
+     */
+    private Mono<Mcp.Response> verifyPinThenForward(AccessToken caller, String serverId,
+                                                    String toolName, Mcp.Request request,
+                                                    PolicyEngine.Decision.Allow allowed) {
+        if (!pinProps.isVerifyOnCall()) {
+            audit.record(caller.subject(), serverId, toolName, "tools/call",
+                    AuditLog.Outcome.ALLOWED, allowed.reason(), List.of("verifyOnCall=false"));
+            return forwardCall(caller, serverId, toolName, request);
+        }
+
+        return fetchTools(serverId)
+                .flatMap(tools -> {
+                    var current = tools.stream()
+                            .filter(t -> toolName.equals(t.name()))
+                            .findFirst();
+                    if (current.isEmpty()) {
+                        // Pinned once, gone now. Nothing to compare against, so there is
+                        // no basis on which to forward the call.
+                        return Mono.just(denyCall(caller, serverId, toolName, request,
+                                "upstream no longer advertises this tool",
+                                List.of("%s/%s".formatted(serverId, toolName))));
+                    }
+                    var verdict = policy.verifyAgainstPin(serverId, current.get());
+                    if (verdict instanceof PolicyEngine.Decision.Deny d) {
+                        notifier.notify(Notifier.Kind.DRIFT_DETECTED,
+                                "%s/%s was called after its definition changed"
+                                        .formatted(serverId, toolName),
+                                "The call was refused. Review: GET /toolgate/drift.txt");
+                        return Mono.just(denyCall(caller, serverId, toolName, request,
+                                d.reason(), d.evidence()));
+                    }
+                    audit.record(caller.subject(), serverId, toolName, "tools/call",
+                            AuditLog.Outcome.ALLOWED, verdict.reason(), List.of());
+                    return forwardCall(caller, serverId, toolName, request);
+                })
+                // An upstream can answer with no body at all — a bodyless 503 deserialises
+                // to an empty Mono rather than an error — and an empty Mono here would
+                // become an empty 200 to the agent. Deferred because denyCall writes to the
+                // audit trail, and an eager one would record a refusal on every call that
+                // succeeded.
+                .switchIfEmpty(Mono.defer(() -> Mono.just(denyCall(caller, serverId, toolName,
+                        request, "could not verify the tool definition before calling",
+                        List.of("upstream returned no usable response")))))
+                .onErrorResume(e -> {
+                    log.warn("could not verify {}/{} before calling: {}",
+                            serverId, toolName, e.toString());
+                    return Mono.just(denyCall(caller, serverId, toolName, request,
+                            "could not verify the tool definition before calling",
+                            List.of("upstream error: " + e.getMessage())));
+                });
+    }
+
+    private Mcp.Response denyCall(AccessToken caller, String serverId, String toolName,
+                                  Mcp.Request request, String reason, List<String> evidence) {
+        audit.record(caller.subject(), serverId, toolName, "tools/call",
+                AuditLog.Outcome.DENIED, reason, evidence);
+        return Mcp.Response.error(request.id(), Mcp.Codes.POLICY_DENIED,
+                "refused by toolgate: " + reason, Map.of("evidence", evidence));
     }
 
     /** Forwards the call upstream with the namespace stripped, then screens the result. */

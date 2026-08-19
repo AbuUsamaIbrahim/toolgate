@@ -103,10 +103,14 @@ public class GatewayController {
                     headerRejection.get().jsonRpcCode(), headerRejection.get().message(), null)));
         }
 
-        if (version != null && !Mcp.PROTOCOL_VERSION.equals(version)) {
+        // The header carries the version negotiated at initialize, so it must accept every
+        // revision the handshake is willing to agree to. Comparing against one revision
+        // meant the gateway could settle on a version and then reject every request made
+        // under it — a handshake that succeeds and a session that cannot proceed.
+        if (version != null && !Mcp.SUPPORTED_PROTOCOL_VERSIONS.contains(version)) {
             return Mono.just(ResponseEntity.ok(Mcp.Response.error(request.id(),
                     Mcp.Codes.INVALID_PARAMS, "unsupported protocol version: " + version,
-                    Map.of("supported", List.of(Mcp.PROTOCOL_VERSION)))));
+                    Map.of("supported", Mcp.SUPPORTED_PROTOCOL_VERSIONS))));
         }
 
         AccessToken caller;
@@ -133,6 +137,18 @@ public class GatewayController {
             // Explicitly opted out. Named so it is obvious in the audit trail that these
             // events carry no identity worth trusting.
             caller = new AccessToken("auth-disabled", Set.of(SCOPE_READ, SCOPE_CALL), null, null);
+        }
+
+        // Notifications get no response body. stdio has always dropped them; over HTTP
+        // they fell through to the method switch and came back as an error carrying a null
+        // id — a reply to something that cannot be replied to, and the first thing a
+        // client sends after a successful handshake.
+        if (request.isNotification()) {
+            if (Mcp.NOTIFICATION_CANCELLED.equals(request.method()) && request.params() != null) {
+                Object cancelled = request.params().get("requestId");
+                if (cancelled != null) gateway.cancelSubscription(String.valueOf(cancelled));
+            }
+            return Mono.just(ResponseEntity.accepted().build());
         }
 
         // A subscription's response IS its stream: it stays open and carries the

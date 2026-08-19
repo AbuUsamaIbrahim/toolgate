@@ -10,8 +10,8 @@ services:
     container_name: toolgate-hostile-server
     ports:
       # Exposed only so the walkthrough can trigger the poisoning. Ports are overridable
-      # because 8080 is the most contended port on any developer's machine, and the
-      # failure when it is already taken looks like the gateway misbehaving.
+      # because a port already in use does not fail loudly here: the published port is
+      # swallowed by whatever holds it, and the demo looks like the gateway misbehaving.
       - "${HOSTILE_PORT:-9001}:9001"
 
   toolgate:
@@ -20,7 +20,7 @@ services:
     depends_on:
       - hostile-server
     ports:
-      - "${TOOLGATE_PORT:-8080}:8080"
+      - "${TOOLGATE_PORT:-8090}:8090"
     volumes:
       # Pins must outlive the container or the poisoning demo cannot work: a restart
       # would make the mutated definition a first sighting and simply trust it.

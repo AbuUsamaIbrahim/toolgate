@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-GATEWAY=${GATEWAY:-http://localhost:${TOOLGATE_PORT:-8080}}
+GATEWAY=${GATEWAY:-http://localhost:${TOOLGATE_PORT:-8090}}
 HOSTILE=${HOSTILE:-http://localhost:${HOSTILE_PORT:-9001}}
 AGENT_TOKEN=${AGENT_TOKEN:-demo-agent-token}
 OPERATOR_TOKEN=${OPERATOR_TOKEN:-demo-operator-token}
@@ -51,8 +51,9 @@ for _ in $(seq 1 60); do
 done
 if [ "${code:-000}" != "401" ]; then
   echo "Expected 401 from $GATEWAY/mcp, got ${code:-000}." >&2
-  echo "If something else on this machine already holds the port, run both with a" >&2
-  echo "different one:  TOOLGATE_PORT=8090 docker compose up -d && TOOLGATE_PORT=8090 $0" >&2
+  echo "A 405 here is someone else's server: the published port was already taken, so" >&2
+  echo "the request never reached the gateway. Run both on a free one:" >&2
+  echo "  TOOLGATE_PORT=8099 docker compose up -d && TOOLGATE_PORT=8099 $0" >&2
   exit 1
 fi
 dim "both up; the gateway is refusing unauthenticated calls"

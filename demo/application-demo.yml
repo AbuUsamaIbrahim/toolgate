@@ -21,7 +21,7 @@ toolgate:
 
   auth:
     enabled: true
-    resource-uri: http://localhost:8080/mcp
+    resource-uri: http://localhost:8090/mcp
     callers:
       demo-agent:
         token-sha256: b83e3e191f2acfe2c3c27f2079c5c13ea8409e9abbf31b671d421d80bbc847c9   # sha256("demo-agent-token")

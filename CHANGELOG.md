@@ -3,6 +3,45 @@
 Pre-1.0. Interfaces may change between minor versions, and nothing here has been reviewed
 by anyone outside the project — see [SECURITY.md](SECURITY.md#status).
 
+## Unreleased
+
+### Fixed — no MCP client could connect
+
+- **`initialize` was not handled, over either transport.** The gateway answered
+  `server/discover` and refused everything else, so the first message any real client sends
+  came back as `-32602 method not proxied: initialize`. Both transports share one method
+  switch, so stdio — the path the README recommends for desktop clients — was equally
+  unreachable. Found by pointing Claude Code at a running gateway; 434 tests passed
+  throughout, because the suite and the demo script both post `tools/list` straight in and
+  never perform a handshake. This is the same defect class as the interop fix in 0.1.0, one
+  layer out: there, the gateway was the client that skipped what real clients do; here, so
+  were its own tests.
+- **The negotiated protocol version was then rejected on every subsequent request.** The
+  `MCP-Protocol-Version` header was compared against the single revision the gateway is
+  written against, so a session could be agreed at one revision and refused at every
+  request made under it. The handshake now negotiates — echoing the client's revision when
+  it is servable, otherwise naming its own and leaving the choice to the client, which is
+  the party that knows what it can accept. `Mcp.SUPPORTED_PROTOCOL_VERSIONS` lists only
+  revisions verified against a live client speaking them.
+- **Notifications received a reply over HTTP.** `notifications/initialized` — sent
+  immediately after a successful handshake — fell through to the method switch and returned
+  an error object carrying a null id, which cannot be correlated and must not be sent. HTTP
+  now answers `202` with no body, as stdio already did.
+
+### Changed
+- **The default port is 8090, not 8080.** 8080 is the default for enough developer tooling
+  that a collision is the norm, and under a VM-based Docker runtime it does not fail
+  loudly: the published port is swallowed by whatever already holds it and the gateway
+  appears to answer with someone else's errors. Anyone running on the old default must move
+  their clients and `toolgate.auth.resource-uri` together, since that URI is the token
+  audience.
+- `serverInfo.version` is defined once rather than in two payloads, where it had drifted a
+  minor release behind the jar.
+
+### Added
+- A copy-paste Claude Code / Cursor configuration in the README, verified against a running
+  gateway rather than written from the specification.
+
 ## 0.1.0 — 2026-08-18
 
 First tagged release. Governs every surface MCP revision `2026-07-28` exposes, over both

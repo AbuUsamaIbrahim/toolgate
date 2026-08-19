@@ -179,7 +179,7 @@ public class DashboardController {
                         .append("<button type=\"submit\" class=\"danger\">Accept as the new baseline</button>")
                         .append("</form>");
             } else {
-                b.append("<code>curl -X POST localhost:8080/toolgate/drift/")
+                b.append("<code>curl -X POST localhost:8090/toolgate/drift/")
                         .append(escape(d.serverId())).append('/').append(escape(d.toolName()))
                         .append("/accept -H \"Authorization: Bearer $TOKEN\"</code>");
             }

@@ -50,7 +50,7 @@ Pins live on a named volume, so the poisoning stays blocked across
 first sighting and simply trust it.
 
 ```bash
-TOOLGATE_PORT=8090 docker compose up -d      # if something already holds 8080
+TOOLGATE_PORT=8099 docker compose up -d      # if something already holds 8090
 docker compose down -v                       # removes the volume, and with it the pins
 ```
 
@@ -494,7 +494,7 @@ When a definition changes, the gateway refuses it and records both sides. Two fi
 tell an operator that something moved; only a diff tells them whether to accept it.
 
 ```
-$ curl -s localhost:8080/toolgate/drift.txt
+$ curl -s localhost:8090/toolgate/drift.txt
 
 tool: files/read_file
 pinned:  2943c615d77c
@@ -509,7 +509,7 @@ current: 86a3788952ac
 Accept it as the new baseline only after looking:
 
 ```
-$ curl -X POST localhost:8080/toolgate/drift/files/read_file/accept
+$ curl -X POST localhost:8090/toolgate/drift/files/read_file/accept
 ```
 
 Two details that matter more than they look:
@@ -961,6 +961,46 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn spring-boot:run
 Agents POST to `/mcp` with a bearer token. Suits shared or containerised deployments where
 several agents sit behind one policy.
 
+### With a coding agent (HTTP)
+
+Against the `docker compose` demo above, which is already running on 8090 with a demo
+token:
+
+```bash
+claude mcp add --transport http toolgate http://localhost:8090/mcp \
+  --header "Authorization: Bearer demo-agent-token"
+```
+
+Cursor, and any client taking the same shape of config:
+
+```jsonc
+// ~/.cursor/mcp.json
+{
+  "mcpServers": {
+    "toolgate": {
+      "url": "http://localhost:8090/mcp",
+      "headers": { "Authorization": "Bearer demo-agent-token" }
+    }
+  }
+}
+```
+
+Tools are read once at startup, so restart the client after adding it. What arrives is the
+filtered surface: of the demo's four tools, two, with the reasons for the other two in the
+audit trail rather than in the model's context.
+
+```
+✔ Connected
+
+outcome=ALLOWED action=advertise caller=demo-agent tool=demo/read_file
+outcome=ALLOWED action=advertise caller=demo-agent tool=demo/send_email
+outcome=DENIED  action=advertise caller=demo-agent tool=demo/search_docs  reason="tool metadata contains adversarial content (score 70)"
+outcome=DENIED  action=advertise caller=demo-agent tool=demo/fetch_url    reason="tool declares an unacceptable x-mcp-header mirror"
+```
+
+Replace the token before this is pointed at anything real: `demo-agent-token` is published
+in this repository, and its SHA-256 is in `demo/application-demo.yml`.
+
 ### Configuration
 
 An upstream is reached either by `command` (a stdio subprocess) or `url` (Streamable
@@ -1004,7 +1044,7 @@ A drift alert is worthless unless someone reads the diff; an approval queue is w
 unless someone notices it is waiting. So there is a page:
 
 ```
-open http://localhost:8080/toolgate     # same credential as the rest of the operator API
+open http://localhost:8090/toolgate     # same credential as the rest of the operator API
 ```
 
 It answers four questions — is policy in force, what changed after approval, who is waiting
@@ -1143,7 +1183,7 @@ toolgate:
 ```
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" localhost:8080/toolgate/drift.txt
+curl -H "Authorization: Bearer $TOKEN" localhost:8090/toolgate/drift.txt
 ```
 
 Two behaviours worth knowing:

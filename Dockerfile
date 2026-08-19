@@ -34,6 +34,6 @@ ENV TOOLGATE_PINS_FILE=/var/lib/toolgate/pins.json \
     TOOLGATE_AUDIT_FILE=/var/lib/toolgate/audit.jsonl \
     TOOLGATE_APPROVALS_FILE=/var/lib/toolgate/approvals.json
 
-EXPOSE 8080
+EXPOSE 8090
 
 ENTRYPOINT ["java", "-jar", "/app/toolgate.jar"]

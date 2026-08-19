@@ -28,7 +28,7 @@ public class AuthProperties {
     private boolean enabled = true;
 
     /** Canonical URI of this gateway, used as the expected token audience (RFC 8707). */
-    private String resourceUri = "http://localhost:8080/mcp";
+    private String resourceUri = "http://localhost:8090/mcp";
 
     /** Where a client should look for authorization server details (RFC 9728). */
     private String authorizationServer = "";

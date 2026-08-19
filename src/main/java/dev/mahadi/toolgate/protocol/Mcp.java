@@ -23,6 +23,34 @@ public final class Mcp {
     /** Required {@code _meta} key carrying the per-request protocol version. */
     public static final String META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion";
 
+    /**
+     * Revisions this gateway will serve, newest first.
+     *
+     * <p>Both entries are verified against a real client, which is the only reason either
+     * is here. Claude Code 2.1.227 opens with {@code 2025-11-25}; answering with the
+     * revision this gateway was written against would end the connection before a single
+     * tool was evaluated. Adding a revision to this list means someone ran a client
+     * speaking it — not that it looks close enough.
+     */
+    public static final List<String> SUPPORTED_PROTOCOL_VERSIONS =
+            List.of(PROTOCOL_VERSION, "2025-11-25");
+
+    /**
+     * The revision to answer a client that asked for {@code requested}.
+     *
+     * <p>Echo what the client asked for when it is servable, otherwise name the preferred
+     * revision and let the client decide whether it can live with it. Failing the
+     * handshake outright is the wrong move: the client is the party that knows what it
+     * can accept, and the specification gives it that choice.
+     */
+    public static String negotiateProtocolVersion(String requested) {
+        return SUPPORTED_PROTOCOL_VERSIONS.contains(requested) ? requested : PROTOCOL_VERSION;
+    }
+
+    /** The handshake every client opens with, and the notification that completes it. */
+    public static final String METHOD_INITIALIZE = "initialize";
+    public static final String NOTIFICATION_INITIALIZED = "notifications/initialized";
+
     public static final String METHOD_DISCOVER = "server/discover";
     public static final String METHOD_TOOLS_LIST = "tools/list";
     public static final String METHOD_TOOLS_CALL = "tools/call";

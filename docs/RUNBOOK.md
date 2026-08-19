@@ -14,8 +14,8 @@ the wrong move and occasionally a catastrophic one. The exceptions are called ou
 ## First 60 seconds
 
 ```bash
-curl -s localhost:8080/actuator/health | jq '.components.policy'
-curl -s localhost:8080/actuator/prometheus | grep '^toolgate_'
+curl -s localhost:8090/actuator/health | jq '.components.policy'
+curl -s localhost:8090/actuator/prometheus | grep '^toolgate_'
 tail -50 ~/.toolgate/audit.jsonl | jq -r 'select(.outcome!="ALLOWED")
   | "\(.at) \(.outcome) \(.serverId)/\(.tool) — \(.reason)"'
 ```
@@ -45,7 +45,7 @@ machine lost access to it.
 
 ```bash
 # what it last had, and how old
-curl -s localhost:8080/actuator/health | jq '.components.policy.details'
+curl -s localhost:8090/actuator/health | jq '.components.policy.details'
 # can this machine still reach the bundle at all?
 curl -sI "$(grep -A1 'bundle:' /config/application.yml | grep source | awk '{print $2}')"
 ```
@@ -72,7 +72,7 @@ not permit it. `drift` means something changed — see below.
 Almost always drift: the definition changed after it was pinned.
 
 ```bash
-curl -s localhost:8080/toolgate/drift.txt -H "Authorization: Bearer $OPERATOR_TOKEN"
+curl -s localhost:8090/toolgate/drift.txt -H "Authorization: Bearer $OPERATOR_TOKEN"
 ```
 
 That prints a field-level diff. **Read it before doing anything.** The gateway cannot tell
@@ -81,7 +81,7 @@ the person.
 
 - The diff is a plausible product change → accept it:
   ```bash
-  curl -sX POST localhost:8080/toolgate/drift/<server>/<tool>/accept \
+  curl -sX POST localhost:8090/toolgate/drift/<server>/<tool>/accept \
     -H "Authorization: Bearer $OPERATOR_TOKEN"
   ```
 - The diff adds instructions aimed at the model, references credentials or paths the tool
