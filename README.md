@@ -14,14 +14,7 @@ Speaks both standard transports: **stdio** and **Streamable HTTP**, in either di
 
 ## Try it
 
-Nothing to install: **[a live instance is running](https://toolgate-demo.fly.dev/toolgate)**
-with a hostile MCP server beside it, attacking it on a loop. The console is real and
-read-only — every write is refused there, including with the operator token. How it is
-deployed, and what makes it safe to publish, is in
-[`demo/hosted/README.md`](demo/hosted/README.md).
-
-To run it yourself — two containers: the gateway, and a server that is genuinely trying to
-get past it.
+Two containers: the gateway, and a server that is genuinely trying to get past it.
 
 ```bash
 docker compose up --build -d

@@ -46,9 +46,41 @@ The driver calls `GatewayService` in-process, through the same `PolicyEngine` th
 decide on anyone's laptop. It does not hold a credential and does not bypass policy — which
 is the only reason the screen means anything.
 
-## Deploying it
+## Deploying it on Render
 
-Needs a Fly.io account. These are run from the repository root.
+No command line and no card. In the [Render](https://render.com) dashboard:
+
+1. Sign up with the GitHub account that owns this repository.
+2. **New → Blueprint**, choose this repository. It reads [`render.yaml`](../../render.yaml)
+   and needs nothing else filled in.
+3. **Apply**. The first build compiles the gateway from source and takes a few minutes.
+
+The URL appears at the top of the service page — `https://<name>.onrender.com/toolgate`.
+Render appends a suffix if the name is taken, so read it there rather than assuming it.
+Nothing in the configuration hardcodes the hostname: the token audience comes from
+`RENDER_EXTERNAL_URL`, which Render injects.
+
+Two things the free plan changes, both fine here and neither hidden:
+
+- **It sleeps after fifteen minutes idle**, and the next visitor waits roughly a minute for
+  the container to start. That is the cost of free.
+- **There is no persistent disk**, so pins do not survive a restart. On a real deployment
+  that would be serious — the pin file is the trust store, and losing it means every
+  definition is trusted again as a first sighting. Here it is harmless because the scenario
+  driver re-establishes the whole state after every start: it pins the current definitions,
+  then makes the upstream change one. The demonstration rebuilds itself rather than
+  depending on anything surviving.
+
+Because a sleeping service wakes with an empty console, the driver runs its first five
+steps at two-second intervals before dropping to the slow cadence. Real drift, a pending
+approval and a list of refusals are on the page within about twenty seconds of the process
+starting, rather than several minutes.
+
+## Deploying it on Fly instead
+
+Better for visitors — it wakes in about a second rather than a minute — but it needs a
+Fly.io account, a card on file, and the `flyctl` command-line tool. These run from the
+repository root.
 
 ```sh
 fly launch --no-deploy --copy-config       # creates the app from fly.toml

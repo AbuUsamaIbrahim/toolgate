@@ -58,6 +58,9 @@ public class DemoScenarioDriver {
     private static final AccessToken AGENT = new AccessToken(
             "demo-agent", Set.of("tools:read", "tools:call"), Set.of(), null, null);
 
+    /** Steps 0 to 4 — the ones that end with drift on the screen. */
+    private static final int PRIME_STEPS = 5;
+
     private final GatewayService gateway;
     private final WebClient hostile;
     private final String hostileUrl;
@@ -85,9 +88,25 @@ public class DemoScenarioDriver {
             t.setDaemon(true);
             return t;
         });
-        // Ten seconds, not zero: the hostile server is a sibling process and may still be
-        // binding its port when this one finishes starting.
-        scheduler.scheduleWithFixedDelay(this::advance, 10, 30, TimeUnit.SECONDS);
+
+        // Prime the console before settling into the slow loop.
+        //
+        // Free hosting sleeps an idle service and starts it with nothing on disk, so the
+        // first visitor after a quiet night is also the first request that wakes it: they
+        // wait for the container, and would then wait several more minutes of a
+        // thirty-second cadence before the first interesting thing appeared. An empty
+        // console is exactly what a gateway looks like when it does not work. Five quick
+        // steps get real drift, a pending approval and a list of refusals onto the page
+        // within about twenty seconds of the process starting.
+        //
+        // The steps are the same ones the loop runs — no separate fast path to drift out
+        // of agreement with the real one.
+        for (int i = 0; i < PRIME_STEPS; i++) {
+            scheduler.schedule(this::advance, 10 + (i * 2L), TimeUnit.SECONDS);
+        }
+        // Single-threaded, so this cannot overlap the priming steps above; it simply
+        // continues the cycle wherever they left it.
+        scheduler.scheduleWithFixedDelay(this::advance, 45, 30, TimeUnit.SECONDS);
         log.info("Demo scenario driver active against {} — this instance attacks itself on a "
                 + "loop so the console always has something to show", hostileUrl);
     }

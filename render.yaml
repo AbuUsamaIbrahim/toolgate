@@ -1,0 +1,38 @@
+# Render blueprint for the public demonstration.
+#
+# In the Render dashboard: New → Blueprint → pick this repository. It reads this file,
+# builds demo/hosted/Dockerfile, and publishes the console. No command line, no card.
+#
+# The alternative, fly.toml, deploys the same image to Fly.io. Fly wakes in about a second
+# where Render's free tier takes closer to a minute, but it needs a card and a CLI. Both
+# are kept because they suit different situations, and neither is the project's real
+# deployment — see demo/hosted/README.md for what this instance is and is not.
+
+services:
+  - type: web
+    name: toolgate-demo
+    runtime: docker
+    dockerfilePath: ./demo/hosted/Dockerfile
+    # The build needs the whole repository: the image compiles the gateway from source
+    # rather than pulling a jar from anywhere.
+    dockerContext: .
+    plan: free
+    region: singapore
+
+    # Liveness rather than /actuator/health. The full endpoint reports DOWN when a policy
+    # bundle goes stale, which is a state to look at, not a reason to replace the process —
+    # a restart cannot refresh a bundle. Pointing a platform's health check at it would
+    # turn a policy problem into a restart loop.
+    healthCheckPath: /actuator/health/liveness
+
+    # A push to main redeploys, the same way the portfolio does.
+    autoDeploy: true
+
+    envVars:
+      - key: SPRING_CONFIG_ADDITIONAL_LOCATION
+        value: /config/
+
+    # Nothing sets the public URL here on purpose. Render injects RENDER_EXTERNAL_URL
+    # itself, and the config reads that — which matters because Render appends a suffix to
+    # the hostname when the name is already taken, so anything written down in advance can
+    # be wrong. That URL is the token audience for /mcp; a stale one rejects valid tokens.
