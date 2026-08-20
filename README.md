@@ -14,7 +14,15 @@ Speaks both standard transports: **stdio** and **Streamable HTTP**, in either di
 
 ## Try it
 
-Two containers: the gateway, and a server that is genuinely trying to get past it.
+Nothing to install: **[a live instance is running](https://toolgate-demo.onrender.com/toolgate)**
+with a hostile MCP server beside it, attacking it on a loop. Everything on that page is the
+gateway's real reaction to it. The console is read-only there — every write is refused, including
+with the operator token — and [`demo/hosted/README.md`](demo/hosted/README.md) explains what makes
+it safe to publish. It runs on a free plan that sleeps when idle, so the first load after a quiet
+spell takes about a minute.
+
+To run it yourself — two containers: the gateway, and a server that is genuinely trying to get past
+it.
 
 ```bash
 docker compose up --build -d
