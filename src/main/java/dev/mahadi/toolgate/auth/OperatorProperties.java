@@ -32,10 +32,29 @@ public class OperatorProperties {
      */
     private boolean loopbackOnly = true;
 
+    /**
+     * Serve the console to anyone, and refuse every write to it — including from the
+     * operator token.
+     *
+     * <p>This exists for one deployment: a public demonstration, where the value is in
+     * being able to see the controls fire and there is nothing to decide. It is not a
+     * "reduced permissions" mode and it is not for production. Off by default, and
+     * announced loudly at startup, because a console that is readable by strangers is a
+     * map of what an attacker's tools were called, which callers exist, and what the
+     * gateway refuses — free reconnaissance on a real deployment.
+     *
+     * <p>Read-only is enforced by refusing unsafe methods outright rather than by hiding
+     * the buttons. Hiding a button is a statement about the page; refusing the method is a
+     * statement about the endpoint, and only one of those survives someone with curl.
+     */
+    private boolean publicReadOnly = false;
+
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public String getTokenSha256() { return tokenSha256; }
     public void setTokenSha256(String tokenSha256) { this.tokenSha256 = tokenSha256; }
     public boolean isLoopbackOnly() { return loopbackOnly; }
     public void setLoopbackOnly(boolean loopbackOnly) { this.loopbackOnly = loopbackOnly; }
+    public boolean isPublicReadOnly() { return publicReadOnly; }
+    public void setPublicReadOnly(boolean publicReadOnly) { this.publicReadOnly = publicReadOnly; }
 }

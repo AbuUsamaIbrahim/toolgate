@@ -259,6 +259,14 @@ public final class DashboardRenderer {
         @keyframes row-flash{from{background:var(--accent-bg)}to{background:transparent}}
         .flash td{animation:row-flash 1.1s ease-out 1}
 
+        /* ---- demo banner ---- */
+        .banner{display:flex;gap:13px;align-items:flex-start;margin:0 0 18px;padding:14px 16px;
+                border:1px solid rgba(56,189,248,.3);border-radius:var(--radius);
+                background:linear-gradient(90deg,var(--accent-bg),transparent)}
+        .banner-mark{color:var(--accent);font-size:15px;line-height:1.4;flex:none}
+        .banner-head{font-weight:600;font-size:13.5px;margin-bottom:3px}
+        .banner-body{font-size:12.5px;color:var(--dim);max-width:84ch}
+
         /* ---- stat cards ---- */
         .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));
                gap:10px;margin-bottom:6px}

@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
@@ -57,11 +58,56 @@ public class OperatorAuthFilter implements WebFilter {
         this.props = props;
     }
 
+    /**
+     * Says out loud what was configured.
+     *
+     * <p>Serving the console to strangers is a deliberate choice for one kind of deployment
+     * and a serious mistake on any other, and the difference between them is a single line
+     * of YAML. A line in the log at every start is what makes it visible to whoever inherits
+     * the deployment rather than only to whoever wrote the config.
+     */
+    @jakarta.annotation.PostConstruct
+    void announce() {
+        if (!props.isEnabled()) {
+            log.warn("Operator API authentication is disabled — anything that can reach this "
+                    + "port can approve a blocked call and re-pin a changed definition");
+        } else if (props.isPublicReadOnly()) {
+            log.warn("Operator console is PUBLIC and READ-ONLY: anyone who can reach it may "
+                    + "read the audit trail, the pins and every drift diff, and no credential "
+                    + "on this deployment can accept, approve or sign in. Intended for a "
+                    + "demonstration; do not run a real gateway this way.");
+        }
+    }
+
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
         String path = exchange.getRequest().getPath().value();
         boolean operatorArea = path.equals(ROOT) || path.startsWith(PREFIX);
-        if (!operatorArea || !props.isEnabled() || UNAUTHENTICATED.contains(path)) {
+        if (!operatorArea || !props.isEnabled()) {
+            return chain.filter(exchange);
+        }
+
+        // A public demonstration: the console is the point, and nothing here is worth
+        // deciding. Reads are open; every write is refused before authentication is even
+        // considered, so there is no credential anywhere that can accept a drifted
+        // definition on this deployment — not the operator's, and not the one whoever
+        // deployed it still holds.
+        //
+        // Checked ahead of the unauthenticated paths below, which is the whole reason this
+        // block sits here rather than after them: signing in is itself a POST, and a login
+        // that still worked would hand out a session whose every button leads to a 403.
+        // No session can be created here, so the console renders in the one state that is
+        // true — read-only — instead of offering actions it will refuse.
+        if (props.isPublicReadOnly()) {
+            if (isReadOnlyMethod(exchange)) {
+                return chain.filter(exchange);
+            }
+            log.warn("Refused {} {} — this deployment is read-only",
+                    exchange.getRequest().getMethod(), path);
+            return deny(exchange, HttpStatus.FORBIDDEN);
+        }
+
+        if (UNAUTHENTICATED.contains(path)) {
             return chain.filter(exchange);
         }
 
@@ -111,6 +157,18 @@ public class OperatorAuthFilter implements WebFilter {
 
     private static boolean acceptsHtml(String accept) {
         return accept != null && accept.contains("text/html");
+    }
+
+    /**
+     * An allowlist of methods, not a block list of the ones that change things.
+     *
+     * <p>A block list is wrong the first time a method is added to HTTP or to this service.
+     * Anything not named here is treated as a write and refused, which is the direction the
+     * mistake should fall in.
+     */
+    private static boolean isReadOnlyMethod(ServerWebExchange exchange) {
+        HttpMethod method = exchange.getRequest().getMethod();
+        return HttpMethod.GET.equals(method) || HttpMethod.HEAD.equals(method);
     }
 
     private static boolean isLoopback(ServerWebExchange exchange) {

@@ -1,0 +1,48 @@
+# Fly configuration for the public demonstration.
+#
+#   fly launch --no-deploy --copy-config    (first time, to create the app)
+#   fly volumes create toolgate_state --size 1 --region sin
+#   fly deploy
+#
+# See demo/hosted/README.md for what this deployment is and is not.
+
+app = "toolgate-demo"
+primary_region = "sin"
+
+[build]
+  dockerfile = "demo/hosted/Dockerfile"
+
+[env]
+  SPRING_CONFIG_ADDITIONAL_LOCATION = "/config/"
+
+[http_service]
+  internal_port = 8090
+  force_https = true
+
+  # The gateway starts in about 1.3 seconds, which is what makes scale-to-zero the right
+  # setting rather than a compromise: a visitor arriving at a stopped machine waits about
+  # as long as a page load, and an idle demonstration costs nothing to keep published.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "20s"
+    method = "GET"
+    # Liveness, not /actuator/health: the full health endpoint reports DOWN when the policy
+    # bundle is stale, which is a state to look at rather than a reason to kill the
+    # process. A restart cannot refresh a bundle.
+    path = "/actuator/health/liveness"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+[mounts]
+  # Pins have to survive a restart. Without this the demonstration inverts: a mutated
+  # definition arriving at an empty pin store is a first sighting, and a first sighting is
+  # trusted — so the console would show a poisoned tool being accepted rather than caught.
+  source = "toolgate_state"
+  destination = "/var/lib/toolgate"

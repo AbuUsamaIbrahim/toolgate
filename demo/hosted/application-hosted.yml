@@ -1,0 +1,84 @@
+# Configuration for the public demonstration at the hosted URL.
+#
+# This file is the only place in the repository where the console is opened to strangers
+# and where the gateway is told to drive traffic at itself. Both are wrong everywhere else,
+# and both are named explicitly here rather than inherited, so that reading this file tells
+# you exactly how this deployment differs from a real one.
+
+toolgate:
+
+  servers:
+    demo:
+      # Loopback: the hostile server shares this container and is not published. A visitor
+      # reaching it directly could operate the attacker instead of watching it fail.
+      url: http://127.0.0.1:9001
+      # All four allowlisted on purpose. In a real deployment search_docs and fetch_url
+      # would simply be left out and refused by the cheapest check — but then the demo
+      # would prove only that an allowlist works. Allowing them makes the scanner and the
+      # header-mirror confinement do the refusing, which is the part worth seeing.
+      allow:
+        - read_file
+        - send_email
+        - search_docs
+        - fetch_url
+      require-approval:
+        - send_email
+
+  operator:
+    enabled: true
+    # The demonstration mode. Reads are public; every write is refused for everyone,
+    # including whoever holds the token below — see OperatorAuthFilter.
+    public-read-only: true
+    # Off, because the visitor is not on loopback. The read-only refusal is what makes
+    # that safe, and it is enforced before this check is reached.
+    loopback-only: false
+    # Deliberately blank. With public-read-only on, no credential can write and no session
+    # can be created, so there is nothing for a token to unlock — and a demo instance with
+    # a real operator credential in its config is a credential in a public repository.
+    token-sha256: ""
+
+  demo:
+    enabled: true
+    hostile-url: http://127.0.0.1:9001
+
+  auth:
+    # The agent endpoint stays shut. The console is the demonstration; /mcp is a working
+    # gateway, and leaving it open would let anyone use this instance as a proxy to the
+    # hostile server and fill the audit trail with someone else's traffic.
+    enabled: true
+    resource-uri: https://toolgate-demo.fly.dev/mcp
+    callers:
+      # sha256 of a value that exists only in the deployment's secrets. The scenario
+      # driver does not use it — it calls the gateway in-process, through the same policy
+      # engine, so the demonstration does not depend on a credential being published.
+      demo-agent:
+        token-sha256: "${TOOLGATE_DEMO_AGENT_SHA256:0000000000000000000000000000000000000000000000000000000000000000}"
+        scopes:
+          - tools:read
+          - tools:call
+
+  pins:
+    file: /var/lib/toolgate/pins.json
+    require-secure-permissions: true
+
+  scanner:
+    rules-file: /var/lib/toolgate/scanner-rules.json
+
+  audit:
+    file: /var/lib/toolgate/audit.jsonl
+    # Off: on this deployment an unwritable audit file should not stop the demonstration.
+    # On a real gateway this is the opposite of the right answer.
+    fail-closed: false
+
+  approvals:
+    file: /var/lib/toolgate/approvals.json
+
+  block-threshold: 50
+  approve-first-sighting: false
+
+server:
+  port: 8090
+
+logging:
+  level:
+    dev.mahadi.toolgate.audit: INFO

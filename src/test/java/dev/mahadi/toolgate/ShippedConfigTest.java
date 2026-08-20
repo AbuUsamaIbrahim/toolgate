@@ -57,6 +57,14 @@ class ShippedConfigTest {
         assertThat(source.getProperty("toolgate.operator.token-sha256"))
                 .as("no default operator credential; unconfigured must mean closed").isEqualTo("");
         assertThat(source.getProperty("toolgate.pins.require-secure-permissions")).isEqualTo(true);
+        // The public demonstration's two switches. Either one shipped on would turn every
+        // deployment into the demo: a console readable by anyone, and a process that makes
+        // tool calls nobody asked for. Absent is the correct value — the properties default
+        // to false in code, and this asserts the file does not quietly say otherwise.
+        assertThat(source.getProperty("toolgate.operator.public-read-only"))
+                .as("the console must not ship readable by strangers").isNull();
+        assertThat(source.getProperty("toolgate.demo.enabled"))
+                .as("nothing should attack itself on a schedule unless asked to").isNull();
         assertThat(source.getProperty("toolgate.audit.fail-closed"))
                 .as("off by default: do not disable the protection to protect the paperwork")
                 .isEqualTo(false);

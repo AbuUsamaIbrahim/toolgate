@@ -54,12 +54,15 @@ public class DashboardController {
     private final dev.mahadi.toolgate.advisor.DriftAdvisor advisor;
     private final ScannerRulesStore scannerRules;
     private final DashboardEventBus eventBus;
+    private final dev.mahadi.toolgate.auth.OperatorProperties operatorProps;
 
     public DashboardController(AuditLog audit, DriftStore drifts, ApprovalStore approvals,
                                ToolPinStore pins, SurfacePinStore surfacePins,
                                BundleStore bundles, OperatorSessions sessions,
                                dev.mahadi.toolgate.advisor.DriftAdvisor advisor,
-                               ScannerRulesStore scannerRules, DashboardEventBus eventBus) {
+                               ScannerRulesStore scannerRules, DashboardEventBus eventBus,
+                               dev.mahadi.toolgate.auth.OperatorProperties operatorProps) {
+        this.operatorProps = operatorProps;
         this.sessions = sessions;
         this.advisor = advisor;
         this.audit = audit;
@@ -163,6 +166,7 @@ public class DashboardController {
         top.append("</div>");
 
         StringBuilder b = new StringBuilder();
+        b.append(demoBanner());
         b.append(cards());
         b.append("<div id=\"drift-section\">").append(driftSection(csrf)).append("</div>");
         b.append("<div id=\"approvals-section\">").append(approvalSection(csrf)).append("</div>");
@@ -176,6 +180,33 @@ public class DashboardController {
                 .header("Referrer-Policy", "no-referrer")
                 .body(DashboardRenderer.page("Dashboard",
                         DashboardRenderer.shell(top.toString(), b.toString()), 0, nonce));
+    }
+
+    /**
+     * What a visitor to the public demonstration is looking at.
+     *
+     * <p>Without this the page is ambiguous in the worst direction: a stranger sees a live
+     * console full of refusals and cannot tell whether it is a real deployment somebody
+     * left open. Saying that the state is generated, and that nothing here can be acted on,
+     * is the difference between a demonstration and an incident.
+     */
+    private String demoBanner() {
+        if (!operatorProps.isPublicReadOnly()) return "";
+        return """
+            <div class="banner">
+              <div class="banner-mark" aria-hidden="true">▮</div>
+              <div>
+                <div class="banner-head">This is a public demonstration, and it is read-only</div>
+                <div class="banner-body">A hostile MCP server runs beside this gateway and
+                attacks it on a loop — poisoned tool descriptions, a definition changed after
+                approval, a tool that was never advertised, an exfiltration URL in metadata.
+                Everything below is the gateway's real reaction to it, live. No button here
+                does anything: every write is refused for everyone, including whoever
+                deployed it. The code is at
+                <a href="https://github.com/AbuUsamaIbrahim/toolgate">github.com/AbuUsamaIbrahim/toolgate</a>.</div>
+              </div>
+            </div>
+            """;
     }
 
     /** The status line's colour, so "every request is being denied" does not read as neutral. */
@@ -300,6 +331,10 @@ public class DashboardController {
                         .append("</form>")
                         .append("<span class=\"sub\">This re-pins the current definition and "
                                 + "names you in the audit trail.</span>");
+            } else if (operatorProps.isPublicReadOnly()) {
+                // Printing the curl command here would be an instruction that returns 403.
+                b.append("<span class=\"sub\">Accepting this definition is refused on this "
+                        + "deployment. Run it yourself to make the decision.</span>");
             } else {
                 b.append("<code>curl -X POST localhost:8090/toolgate/drift/")
                         .append(escape(d.serverId())).append('/').append(escape(d.toolName()))

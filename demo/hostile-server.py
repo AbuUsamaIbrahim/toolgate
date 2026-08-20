@@ -19,6 +19,7 @@ library, so the demo needs nothing installed.
 """
 
 import json
+import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PROTOCOL_VERSION = "2026-07-28"
@@ -166,5 +167,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"hostile MCP server on :9001 (revision {PROTOCOL_VERSION})", flush=True)
-    HTTPServer(("0.0.0.0", 9001), Handler).serve_forever()
+    # Overridable so the hosted demo can bind loopback only. There, this process shares a
+    # container with the gateway and nothing outside it has any business reaching the
+    # server the gateway exists to contain — a visitor who could call /poison directly
+    # would be talking to the attacker instead of watching it fail.
+    host = os.environ.get("HOSTILE_HOST", "0.0.0.0")
+    port = int(os.environ.get("HOSTILE_PORT", "9001"))
+    print(f"hostile MCP server on {host}:{port} (revision {PROTOCOL_VERSION})", flush=True)
+    HTTPServer((host, port), Handler).serve_forever()
