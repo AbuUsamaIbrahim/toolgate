@@ -60,6 +60,15 @@ Render appends a suffix if the name is taken, so read it there rather than assum
 Nothing in the configuration hardcodes the hostname: the token audience comes from
 `RENDER_EXTERNAL_URL`, which Render injects.
 
+**Connect GitHub rather than pasting a public repository URL.** The same page offers both,
+and the public-URL route is tempting because it skips an authorization screen — but Render
+cannot install a webhook on a repository it has no relationship with, so nothing triggers a
+build when the code changes and every deploy is a button somebody has to remember to press.
+Connecting the repository is what makes `autoDeploy: true` in the blueprint mean anything.
+On the GitHub screen, choose **Only select repositories** and pick this one: the app's
+permission set is fixed and includes write access to hooks, checks and deployments, and
+limiting the scope is the only part of it you control.
+
 Two things the free plan changes, both fine here and neither hidden:
 
 - **It sleeps after fifteen minutes idle**, and the next visitor waits roughly a minute for
