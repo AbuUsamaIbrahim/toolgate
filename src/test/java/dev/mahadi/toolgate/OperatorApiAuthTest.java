@@ -77,6 +77,15 @@ class OperatorApiAuthTest {
     }
 
     @Test
+    @DisplayName("the live event stream is guarded like every other operator route")
+    void eventStreamRequiresToken() {
+        // The stream carries refusal reasons, caller identities and drift diffs. It was
+        // added after this filter and inherits it only because it sits under the prefix —
+        // which is the argument for a filter, and worth an assertion rather than a comment.
+        client().get().uri("/toolgate/events").exchange().expectStatus().isUnauthorized();
+    }
+
+    @Test
     @DisplayName("a wrong token is refused")
     void wrongTokenRejected() {
         client().get().uri("/toolgate/audit")
