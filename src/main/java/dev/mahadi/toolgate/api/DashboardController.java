@@ -15,9 +15,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 
-import java.security.SecureRandom;
 import java.time.Duration;
-import java.util.Base64;
 import java.util.List;
 
 import static dev.mahadi.toolgate.api.DashboardRenderer.*;
@@ -56,7 +54,6 @@ public class DashboardController {
     private final dev.mahadi.toolgate.advisor.DriftAdvisor advisor;
     private final ScannerRulesStore scannerRules;
     private final DashboardEventBus eventBus;
-    private static final SecureRandom RANDOM = new SecureRandom();
 
     public DashboardController(AuditLog audit, DriftStore drifts, ApprovalStore approvals,
                                ToolPinStore pins, SurfacePinStore surfacePins,
@@ -142,27 +139,30 @@ public class DashboardController {
             if (raw != null) auditPage = Math.max(0, Integer.parseInt(raw));
         } catch (NumberFormatException ignored) {}
 
-        StringBuilder b = new StringBuilder();
-        b.append("<h1>toolgate</h1><div class=\"sub\">")
-                .append(escape(status()))
-                .append(" · <span id=\"live-badge\" style=\"display:inline-flex;align-items:center;gap:5px;font-size:11px\">")
-                .append("<span id=\"live-dot\" style=\"width:7px;height:7px;border-radius:50%;background:#6b7a90;display:inline-block\"></span>")
-                .append("<span id=\"live-text\" style=\"color:var(--faint)\">connecting…</span>")
-                .append("</span>");
+        // The nonce admits exactly one stylesheet and one script — the ones this method
+        // renders. Markup an upstream wrote cannot carry a matching attribute, and
+        // 'unsafe-inline' is absent from the policy rather than present and ignored.
+        String nonce = DashboardRenderer.newNonce();
+
+        StringBuilder top = new StringBuilder();
+        top.append("<div class=\"brand\"><span class=\"brand-mark\" aria-hidden=\"true\"></span>")
+                .append("toolgate<span class=\"brand-sub\">operator console</span></div>")
+                .append("<div class=\"topbar-spacer\"></div>")
+                .append("<div class=\"topbar-meta\">")
+                .append("<span class=\"status status-").append(statusTone()).append("\">")
+                .append("<span class=\"status-dot\" aria-hidden=\"true\"></span>")
+                .append(escape(status())).append("</span>")
+                .append("<span class=\"live\" id=\"live-badge\">")
+                .append("<span class=\"live-dot\" id=\"live-dot\" aria-hidden=\"true\"></span>")
+                .append("<span class=\"live-text\" id=\"live-text\">connecting…</span></span>");
         if (session != null) {
-            b.append(" · <form method=\"post\" action=\"/toolgate/logout\" class=\"inline\">")
+            top.append("<form method=\"post\" action=\"/toolgate/logout\" class=\"inline\">")
                     .append(csrfField(csrf))
                     .append("<button class=\"link\" type=\"submit\">sign out</button></form>");
         }
-        b.append("</div>");
+        top.append("</div>");
 
-        // Nonce lets the live-update script run while keeping the policy tight. A random
-        // nonce per request means an injected <script> tag — which cannot know the nonce —
-        // will not execute even if it somehow reaches the page.
-        byte[] nonceBytes = new byte[18];
-        RANDOM.nextBytes(nonceBytes);
-        String nonce = Base64.getEncoder().encodeToString(nonceBytes);
-
+        StringBuilder b = new StringBuilder();
         b.append(cards());
         b.append("<div id=\"drift-section\">").append(driftSection(csrf)).append("</div>");
         b.append("<div id=\"approvals-section\">").append(approvalSection(csrf)).append("</div>");
@@ -171,14 +171,21 @@ public class DashboardController {
         b.append(liveScript(nonce));
 
         return ResponseEntity.ok()
-                .header("Content-Security-Policy",
-                        "default-src 'none'; style-src 'unsafe-inline' 'nonce-" + nonce + "'; "
-                                + "script-src 'nonce-" + nonce + "'; "
-                                + "connect-src 'self'; "
-                                + "form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+                .header("Content-Security-Policy", DashboardRenderer.csp(nonce))
                 .header("X-Content-Type-Options", "nosniff")
                 .header("Referrer-Policy", "no-referrer")
-                .body(DashboardRenderer.page("Dashboard", b.toString(), 0, nonce));
+                .body(DashboardRenderer.page("Dashboard",
+                        DashboardRenderer.shell(top.toString(), b.toString()), 0, nonce));
+    }
+
+    /** The status line's colour, so "every request is being denied" does not read as neutral. */
+    private String statusTone() {
+        return switch (bundles.health()) {
+            case FRESH -> "ok";
+            case DISABLED -> "dim";
+            case STALE -> "warn";
+            case FAILED -> "bad";
+        };
     }
 
     private String status() {
@@ -200,20 +207,45 @@ public class DashboardController {
         };
         int outstanding = drifts.all().size();
         int waiting = approvals.outstanding().size();
+        // Not health.name(): "DISABLED" is the bundle feature's state, and on a card headed
+        // "Policy" it reads as though the gateway itself is switched off — which is the
+        // opposite of the truth, since local policy is being enforced.
+        String policyWord = switch (health) {
+            case FRESH -> "signed";
+            case DISABLED -> "local";
+            case STALE -> "stale";
+            case FAILED -> "failed";
+        };
 
+        // The two counts that mean somebody has to do something are links, and carry an
+        // accent stripe when non-zero. A number that needs a human should not look the same
+        // as one that does not.
         return """
             <div class="cards">
-              <div class="card"><div class="k">Policy</div><div class="v %s">%s</div></div>
-              <div class="card"><div class="k">Bundle sequence</div><div class="v dim">%s</div></div>
-              <div class="card"><div class="k">Drift to review</div><div id="card-drift" class="v %s">%d</div></div>
-              <div class="card"><div class="k">Awaiting approval</div><div id="card-approvals" class="v %s">%d</div></div>
-              <div class="card"><div class="k">Pinned definitions</div><div class="v dim">%d</div></div>
+              <div class="card"><div class="k">Policy</div><div class="v %s">%s</div>
+                <div class="h">%s</div></div>
+              <div class="card"><div class="k">Bundle sequence</div><div class="v dim">%s</div>
+                <div class="h">%s</div></div>
+              <a class="card%s" href="#drift"><div class="k">Drift to review</div>
+                <div id="card-drift" class="v %s">%d</div>
+                <div class="h">%s</div></a>
+              <a class="card%s" href="#approvals"><div class="k">Awaiting approval</div>
+                <div id="card-approvals" class="v %s">%d</div>
+                <div class="h">%s</div></a>
+              <div class="card"><div class="k">Pinned definitions</div><div class="v dim">%d</div>
+                <div class="h">tools, resources and prompts</div></div>
             </div>
             """.formatted(
-                cls, escape(health.name().toLowerCase()),
+                cls, escape(policyWord),
+                escape(status()),
                 bundles.current().map(c -> String.valueOf(c.sequence())).orElse("—"),
+                bundles.current().map(c -> "rollback floor held").orElse("no bundle configured"),
+                outstanding > 0 ? " attn" : "",
                 outstanding > 0 ? "warn" : "dim", outstanding,
+                outstanding > 0 ? "definitions changed after approval" : "all definitions match",
+                waiting > 0 ? " attn" : "",
                 waiting > 0 ? "warn" : "dim", waiting,
+                waiting > 0 ? "a call is blocked until someone decides" : "nothing blocked",
                 pins.all().size() + surfacePins.all().size());
     }
 
@@ -232,39 +264,65 @@ public class DashboardController {
 
     private String driftSection(String csrf) {
         var all = drifts.list();
-        StringBuilder b = new StringBuilder("<h2>Definitions that changed after approval</h2>");
+        StringBuilder b = new StringBuilder(sectionHead("drift",
+                "Definitions that changed after approval",
+                all.isEmpty() ? null : String.valueOf(all.size()),
+                "warn",
+                "A pinned definition no longer matches what the server is advertising. "
+                        + "The tool stays blocked until someone decides which version is real."));
         if (all.isEmpty()) {
-            return b.append("<div class=\"empty\">Nothing waiting. Every definition matches "
-                    + "the version that was approved.</div>").toString();
+            return b.append(emptyState("No drift outstanding",
+                    "Every definition matches the version that was approved.")).toString();
         }
         for (var d : all) {
-            b.append("<div class=\"panel\"><h3>")
+            b.append("<div class=\"panel\"><div class=\"panel-head\"><h3>")
                     .append(escape(d.serverId())).append('/').append(escape(d.toolName()))
-                    .append("</h3><div class=\"sub\">detected ").append(escape(ago(d.detectedAt())))
+                    .append("</h3><span class=\"pill p-warn\">blocked</span>")
+                    .append("<span class=\"meta\">detected ").append(escape(ago(d.detectedAt())))
+                    .append("</span></div><div class=\"panel-body\">")
+                    .append(DIFF_LEGEND)
+                    .append("<div class=\"diff\">").append(diff(DriftStore.renderText(d)))
                     .append("</div>")
-                    .append(diff(DriftStore.renderText(d)))
                     .append(advice(d))
-                    .append("<div class=\"note\">Accept only if this reads as a product change. "
-                            + "Instructions aimed at the model, unexpected paths, or characters "
-                            + "marked in red are the attack this exists to catch.</div>");
+                    .append("<div class=\"note-block\">Accept only if this reads as a product "
+                            + "change. Instructions aimed at the model, unexpected paths, or "
+                            + "characters marked in red are the attack this exists to catch."
+                            + "</div></div>");
+            b.append("<div class=\"panel-foot\">");
             if (csrf != null) {
-                b.append("<form method=\"post\" action=\"/toolgate/ui/drift/accept\">")
+                b.append("<form method=\"post\" action=\"/toolgate/ui/drift/accept\" class=\"inline\">")
                         .append(csrfField(csrf))
                         .append("<input type=\"hidden\" name=\"server\" value=\"")
                         .append(escape(d.serverId())).append("\">")
                         .append("<input type=\"hidden\" name=\"tool\" value=\"")
                         .append(escape(d.toolName())).append("\">")
                         .append("<button type=\"submit\" class=\"danger\">Accept as the new baseline</button>")
-                        .append("</form>");
+                        .append("</form>")
+                        .append("<span class=\"sub\">This re-pins the current definition and "
+                                + "names you in the audit trail.</span>");
             } else {
                 b.append("<code>curl -X POST localhost:8090/toolgate/drift/")
                         .append(escape(d.serverId())).append('/').append(escape(d.toolName()))
                         .append("/accept -H \"Authorization: Bearer $TOKEN\"</code>");
             }
-            b.append("</div>");
+            b.append("</div></div>");
         }
         return b.toString();
     }
+
+    /**
+     * The key to the diff, next to the diff.
+     *
+     * <p>The red marker is the one that matters — a reviewer who does not know that
+     * {@code ⟨U+200B⟩} means "there is a character here you cannot see" reads the diff as
+     * clean.
+     */
+    private static final String DIFF_LEGEND = """
+        <div class="diff-legend">
+          <span><i class="swatch swatch-del"></i>was approved</span>
+          <span><i class="swatch swatch-add"></i>now advertised</span>
+          <span><mark class="hidden-char">⟨U+200B⟩</mark>a character you cannot otherwise see</span>
+        </div>""";
 
     /**
      * The advisor's note, shown beside the diff and never in place of it.
@@ -303,36 +361,42 @@ public class DashboardController {
 
     private String approvalSection(String csrf) {
         var waiting = approvals.outstanding();
-        StringBuilder b = new StringBuilder("<h2>Waiting for a human</h2>");
+        StringBuilder b = new StringBuilder(sectionHead("approvals", "Waiting for a human",
+                waiting.isEmpty() ? null : String.valueOf(waiting.size()), "warn",
+                "A call the policy will not make on its own. The agent is blocked on each of "
+                        + "these until someone decides, and the grant is single-use."));
         if (waiting.isEmpty()) {
-            return b.append("<div class=\"empty\">No pending approvals.</div>").toString();
+            return b.append(emptyState("Nothing is waiting",
+                    "No call is currently blocked on a human decision.")).toString();
         }
-        b.append("<table><tr><th>Who</th><th>Tool</th><th>Why</th><th>Raised</th>")
-                .append(csrf == null ? "" : "<th>Decide</th>").append("</tr>");
+        b.append("<div class=\"table-wrap\"><table><thead><tr><th>Who</th><th>Tool</th>"
+                        + "<th>Why</th><th>Raised</th>")
+                .append(csrf == null ? "" : "<th>Decide</th>").append("</tr></thead><tbody>");
         waiting.values().forEach(p -> {
             b.append("<tr><td class=\"mono\">").append(escape(p.caller()))
                     .append("</td><td class=\"mono\">").append(escape(p.serverId()))
                     .append('/').append(escape(p.tool()))
                     .append("</td><td class=\"dim\">").append(escape(p.reason()))
-                    .append("</td><td class=\"dim\">").append(escape(ago(p.createdAt())))
+                    .append("</td><td class=\"dim cell-nowrap\">").append(escape(ago(p.createdAt())))
                     .append("</td>");
             if (csrf != null) {
-                b.append("<td><form method=\"post\" action=\"/toolgate/ui/approval\" class=\"inline\">")
+                b.append("<td class=\"cell-nowrap\">")
+                        .append("<form method=\"post\" action=\"/toolgate/ui/approval\" class=\"inline\">")
                         .append(csrfField(csrf))
                         .append("<input type=\"hidden\" name=\"id\" value=\"")
                         .append(escape(p.id())).append("\">")
                         // Typed, not defaulted: an approval must name a person, and the
                         // requester is refused by the store rather than by this form.
                         .append("<input name=\"approver\" placeholder=\"you@example.com\" ")
-                        .append("required class=\"who\">")
+                        .append("required class=\"who\" aria-label=\"your identity\">")
                         .append("<button type=\"submit\" name=\"decision\" value=\"approve\">Approve</button>")
                         .append("<button type=\"submit\" name=\"decision\" value=\"deny\" class=\"danger\">Deny</button>")
                         .append("</form></td>");
             }
             b.append("</tr>");
         });
-        b.append("</table><div class=\"note\">The requester cannot approve their own call. "
-                + "Approving names you in the audit trail.</div>");
+        b.append("</tbody></table></div><div class=\"note\">The requester cannot approve their "
+                + "own call. Approving names you in the audit trail.</div>");
         return b.toString();
     }
 
@@ -345,25 +409,28 @@ public class DashboardController {
      */
     private String scannerRulesSection(String csrf) {
         List<ScannerRule> all = scannerRules.all();
-        StringBuilder b = new StringBuilder("<h2 id=\"scanner-rules\">Scanner rules</h2>");
-        b.append("<div class=\"sub\">Regex patterns scored against every tool definition at "
-                + "tools/list. Score ≥ block-threshold → tool is withheld from the model.</div>");
+        long enabled = all.stream().filter(ScannerRule::enabled).count();
+        StringBuilder b = new StringBuilder(sectionHead("scanner-rules", "Scanner rules",
+                enabled + " of " + all.size() + " active", "dim",
+                "Regex patterns scored against every tool definition at <code>tools/list</code>. "
+                        + "Scores are additive; a tool reaching the block threshold is withheld "
+                        + "from the model rather than shown to it."));
 
-        b.append("<table><tr><th>Category</th><th>Pattern</th><th>Weight</th>"
-                + "<th>Description</th><th>Status</th>");
+        b.append("<div class=\"table-wrap\"><table><thead><tr><th>Category</th><th>Pattern</th>"
+                + "<th>Weight</th><th>Description</th><th>Status</th>");
         if (csrf != null) b.append("<th>Actions</th>");
-        b.append("</tr>");
+        b.append("</tr></thead><tbody>");
 
         for (ScannerRule r : all) {
             String statusPill = r.enabled()
                     ? "<span class=\"pill p-ok\">enabled</span>"
                     : "<span class=\"pill p-bad\">disabled</span>";
             String builtInBadge = r.builtIn()
-                    ? " <span class=\"pill dim\" style=\"font-size:10px\">built-in</span>" : "";
+                    ? " <span class=\"pill dim tiny\">built-in</span>" : "";
 
             b.append("<tr>")
              .append("<td class=\"mono\">").append(escape(r.category())).append("</td>")
-             .append("<td class=\"mono\" style=\"word-break:break-all;max-width:260px\">")
+             .append("<td class=\"mono cell-pattern\">")
              .append(escape(r.pattern())).append("</td>")
              .append("<td class=\"mono\">").append(r.weight()).append("</td>")
              .append("<td class=\"dim\">").append(escape(r.description())).append(builtInBadge)
@@ -372,7 +439,7 @@ public class DashboardController {
 
             if (csrf != null) {
                 // Toggle button (available for all rules)
-                b.append("<td style=\"white-space:nowrap\">")
+                b.append("<td class=\"cell-nowrap\">")
                  .append("<form method=\"post\" action=\"/toolgate/ui/scanner/toggle\" "
                          + "class=\"inline\">")
                  .append(csrfField(csrf))
@@ -396,38 +463,34 @@ public class DashboardController {
             }
             b.append("</tr>");
         }
-        b.append("</table>");
+        b.append("</tbody></table></div>");
 
         // Add-rule form — only when logged in with a session
         if (csrf != null) {
-            b.append("<details style=\"margin-top:14px\"><summary style=\"cursor:pointer;"
-                     + "color:var(--dim);font-size:12px\">Add a custom rule</summary>");
-            b.append("<form method=\"post\" action=\"/toolgate/ui/scanner/rule\" "
-                     + "style=\"margin-top:10px;display:grid;gap:8px;max-width:560px\">")
+            b.append("<details class=\"adder\"><summary>Add a custom rule</summary>");
+            b.append("<form method=\"post\" action=\"/toolgate/ui/scanner/rule\" class=\"form-grid\">")
              .append(csrfField(csrf))
-             .append("<div><label class=\"k\">Category</label>"
-                     + "<select name=\"category\" style=\"margin-top:4px;width:100%;"
-                     + "background:#0d1117;border:1px solid var(--line);border-radius:6px;"
-                     + "color:var(--ink);padding:7px 10px\">")
+             .append("<div class=\"field\"><label class=\"field-label\" for=\"rule-category\">"
+                     + "Category</label>"
+                     + "<select id=\"rule-category\" name=\"category\" class=\"select\">")
              .append("<option value=\"imperative_instruction\">imperative_instruction</option>")
              .append("<option value=\"credential_target\">credential_target</option>")
              .append("<option value=\"exfiltration_shape\">exfiltration_shape</option>")
              .append("<option value=\"hidden_unicode\">hidden_unicode</option>")
              .append("</select></div>")
-             .append("<div><label class=\"k\">Regex pattern (Java, case-insensitive)</label>"
-                     + "<input name=\"pattern\" required placeholder=\"e.g. exfiltrate\\\\s+to\" "
-                     + "style=\"margin-top:4px;width:100%;background:#0d1117;border:1px solid "
-                     + "var(--line);border-radius:6px;color:var(--ink);font-family:"
-                     + "ui-monospace,Menlo,monospace;padding:7px 10px\"></div>")
-             .append("<div style=\"display:grid;grid-template-columns:1fr 1fr;gap:8px\">")
-             .append("<div><label class=\"k\">Weight (added to score on match)</label>"
-                     + "<input name=\"weight\" type=\"number\" value=\"30\" min=\"1\" max=\"100\" "
-                     + "style=\"margin-top:4px;width:100%;background:#0d1117;border:1px solid "
-                     + "var(--line);border-radius:6px;color:var(--ink);padding:7px 10px\"></div>")
-             .append("<div><label class=\"k\">Description (shown in this table)</label>"
-                     + "<input name=\"description\" placeholder=\"What this pattern catches\" "
-                     + "style=\"margin-top:4px;width:100%;background:#0d1117;border:1px solid "
-                     + "var(--line);border-radius:6px;color:var(--ink);padding:7px 10px\"></div>")
+             .append("<div class=\"field\"><label class=\"field-label\" for=\"rule-pattern\">"
+                     + "Regex pattern (Java, case-insensitive)</label>"
+                     + "<input id=\"rule-pattern\" name=\"pattern\" required class=\"input\" "
+                     + "placeholder=\"e.g. exfiltrate\\\\s+to\"></div>")
+             .append("<div class=\"form-cols\">")
+             .append("<div class=\"field\"><label class=\"field-label\" for=\"rule-weight\">"
+                     + "Weight (added to score on match)</label>"
+                     + "<input id=\"rule-weight\" name=\"weight\" type=\"number\" value=\"30\" "
+                     + "min=\"1\" max=\"100\" class=\"input\"></div>")
+             .append("<div class=\"field\"><label class=\"field-label\" for=\"rule-description\">"
+                     + "Description (shown in this table)</label>"
+                     + "<input id=\"rule-description\" name=\"description\" class=\"input\" "
+                     + "placeholder=\"What this pattern catches\"></div>")
              .append("</div>")
              .append("<div><button type=\"submit\">Add rule</button></div>")
              .append("</form></details>");
@@ -435,7 +498,9 @@ public class DashboardController {
 
         b.append("<div class=\"note\">Scores are additive. A single match at weight 40 plus "
                 + "one at weight 30 = score 70. Block threshold is set in "
-                + "<code>toolgate.block-threshold</code> (currently blocks at ≥ 50).</div>");
+                + "<code>toolgate.block-threshold</code> (currently blocks at ≥ 50). "
+                + "Built-in rules can be disabled but not deleted — removing one permanently "
+                + "takes a code change, deliberately.</div>");
         return b.toString();
     }
 
@@ -447,19 +512,20 @@ public class DashboardController {
             case FAILED -> "p-warn";
             default -> "p-ok";
         };
-        StringBuilder why = new StringBuilder();
-        why.append("<span class=\"mono\">").append(escape(e.caller()))
-           .append("</span> tried to call <span class=\"mono\">")
-           .append(escape(e.serverId())).append('/').append(escape(e.tool()))
-           .append("</span><br><span class=\"dim\">").append(escape(e.reason()))
-           .append("</span>");
+        // The reason leads, and the caller and tool each get their own column. The first
+        // version restated "X tried to call Y" inside the reason cell while the same tool
+        // sat in the column beside it, so the one piece of information that differs between
+        // two rows — why this one was refused — was the last thing read.
+        StringBuilder why = new StringBuilder("<span class=\"dim\">")
+                .append(escape(e.reason())).append("</span>");
         if (!e.evidence().isEmpty()) {
-            why.append("<br><span class=\"dim\" style=\"font-size:0.85em\">")
+            why.append("<br><span class=\"evidence\">")
                .append(escape(String.join(" · ", e.evidence()))).append("</span>");
         }
-        return "<tr><td class=\"dim mono\">" + escape(ago(e.at()))
+        return "<tr><td class=\"dim mono cell-nowrap\">" + escape(ago(e.at()))
                 + "</td><td><span class=\"pill " + pill + "\">"
                 + escape(e.outcome().name()) + "</span></td>"
+                + "<td class=\"mono\">" + escape(e.caller()) + "</td>"
                 + "<td class=\"mono\">" + escape(e.serverId()) + '/' + escape(e.tool())
                 + "</td><td>" + why + "</td></tr>";
     }
@@ -474,21 +540,18 @@ public class DashboardController {
      */
     private String liveScript(String nonce) {
         return """
-            <style nonce="%s">
-            @keyframes live-pulse {
-              0%%,100%%{opacity:1} 50%%{opacity:.35}
-            }
-            #live-dot.connected { background:#4ade80; animation:live-pulse 2s ease-in-out infinite }
-            #live-dot.error     { background:#f87171; animation:none }
-            </style>
             <script nonce="%s">
             (function() {
-              var dot  = document.getElementById('live-dot');
-              var txt  = document.getElementById('live-text');
+              var badge = document.getElementById('live-badge');
+              var dot   = document.getElementById('live-dot');
+              var txt   = document.getElementById('live-text');
 
+              // Class names only — the stylesheet owns the colours, and with a nonce in
+              // style-src an inline style attribute would not be applied anyway.
               function setStatus(state, label) {
-                if (dot) { dot.className = state; }
-                if (txt) { txt.textContent = label; txt.style.color = state === 'connected' ? 'var(--ok)' : state === 'error' ? 'var(--bad)' : 'var(--faint)'; }
+                if (dot) { dot.className = 'live-dot' + (state ? ' ' + state : ''); }
+                if (badge) { badge.className = 'live' + (state ? ' ' + state : ''); }
+                if (txt) { txt.textContent = label; }
               }
 
               var es = new EventSource('/toolgate/events');
@@ -510,7 +573,7 @@ public class DashboardController {
                 tmp.innerHTML = e.data;
                 var row = tmp.firstChild;
                 if (row) {
-                  row.style.animation = 'live-pulse 0.6s ease-out 1';
+                  row.className = 'flash';
                   tbody.insertBefore(row, tbody.firstChild);
                 }
                 while (tbody.rows.length > %d) tbody.deleteRow(tbody.rows.length - 1);
@@ -531,7 +594,7 @@ public class DashboardController {
               };
             })();
             </script>
-            """.formatted(nonce, nonce, AUDIT_PAGE_SIZE);
+            """.formatted(nonce, AUDIT_PAGE_SIZE);
     }
 
     /**
@@ -554,17 +617,23 @@ public class DashboardController {
                 .limit(AUDIT_PAGE_SIZE)
                 .toList();
 
-        StringBuilder b = new StringBuilder("<h2 id=\"recently-refused\">Recently refused</h2>");
+        StringBuilder b = new StringBuilder(sectionHead("recently-refused", "Recently refused",
+                total == 0 ? null : String.valueOf(total), "dim",
+                "Only refusals, and only the last thousand held in memory. What the gateway "
+                        + "allowed is in the audit file. New entries arrive here live."));
         if (total == 0) {
-            return b.append("<div class=\"empty\">Nothing has been refused.</div>").toString();
+            return b.append(emptyState("Nothing has been refused",
+                    "No tool, resource or prompt has been withheld since this process started."))
+                    .toString();
         }
 
-        b.append("<table><tr><th>When</th><th></th><th>What</th><th>Why</th></tr>")
+        b.append("<div class=\"table-wrap\"><table><thead><tr><th>When</th><th>Outcome</th>"
+                        + "<th>Caller</th><th>Tool</th><th>Why</th></tr></thead>")
          .append("<tbody id=\"audit-tbody\">");
         for (var e : refusals) {
             b.append(auditRow(e));
         }
-        b.append("</tbody></table>");
+        b.append("</tbody></table></div>");
 
         // Pagination controls
         b.append("<div class=\"pagination\">");

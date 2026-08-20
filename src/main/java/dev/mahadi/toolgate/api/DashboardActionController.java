@@ -70,24 +70,26 @@ public class DashboardActionController {
     @GetMapping(value = "/toolgate/login", produces = MediaType.TEXT_HTML_VALUE)
     public ResponseEntity<String> loginForm(@RequestParam(required = false) String error) {
         String message = error == null ? ""
-                : "<div class=\"empty bad\">That token was not accepted.</div>";
-        return html("""
-            <h1>toolgate</h1>
-            <div class="sub">Operator console</div>
-            <div class="panel" style="max-width:420px">
-              <form method="post" action="/toolgate/login">
-                <label class="k">Operator token</label>
-                <input type="password" name="token" autocomplete="current-password"
-                       autofocus style="width:100%%;margin:8px 0 12px;padding:9px 11px;
-                       background:#0d1117;border:1px solid var(--line);border-radius:6px;
-                       color:var(--ink);font-family:ui-monospace,Menlo,monospace">
-                <button type="submit">Sign in</button>
-              </form>
-              %s
-              <div class="note">The same credential as the operator API. It is exchanged for
-              a session cookie scoped to <code>/toolgate</code>, so it is never sent to the
-              endpoint agents use.</div>
-            </div>
+                : "<div class=\"signin-error\">That token was not accepted.</div>";
+        return html("Sign in", """
+            <div class="signin"><div class="panel-narrow">
+              <div class="brand"><span class="brand-mark" aria-hidden="true"></span>toolgate</div>
+              <div class="signin-sub">Operator console</div>
+              <div class="panel"><div class="panel-body">
+                <form method="post" action="/toolgate/login">
+                  <div class="field">
+                    <label class="field-label" for="token">Operator token</label>
+                    <input id="token" class="input" type="password" name="token"
+                           autocomplete="current-password" autofocus>
+                  </div>
+                  <div class="form-grid"><div><button type="submit">Sign in</button></div></div>
+                </form>
+                %s
+                <div class="note">The same credential as the operator API. It is exchanged for
+                a session cookie scoped to <code>/toolgate</code>, so it is never sent to the
+                endpoint agents use.</div>
+              </div></div>
+            </div></div>
             """.formatted(message));
     }
 
@@ -304,23 +306,43 @@ public class DashboardActionController {
     }
 
     private ResponseEntity<?> forbidden() {
+        String nonce = DashboardRenderer.newNonce();
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .contentType(MediaType.TEXT_HTML)
-                .body(page("Refused", "<h1>Refused</h1><div class=\"sub\">Session missing or "
-                        + "the request could not be verified as coming from this page.</div>"));
+                .header("Content-Security-Policy", DashboardRenderer.csp(nonce))
+                .header("X-Content-Type-Options", "nosniff")
+                .header("Referrer-Policy", "no-referrer")
+                .body(page("Refused", """
+                    <div class="signin"><div class="panel-narrow">
+                      <div class="brand"><span class="brand-mark" aria-hidden="true"></span>toolgate</div>
+                      <div class="signin-sub">Refused</div>
+                      <div class="panel"><div class="panel-body">
+                        <div class="empty warn-state"><div class="empty-mark" aria-hidden="true">!</div>
+                          <div><div class="empty-head">This request was not carried out</div>
+                          <div class="empty-detail">The session is missing, or the request could
+                          not be verified as coming from this page.</div></div></div>
+                        <div class="note"><a href="/toolgate">Back to the console</a></div>
+                      </div></div>
+                    </div></div>
+                    """, 0, nonce));
     }
 
-    private ResponseEntity<String> html(String body) {
+    /**
+     * Every operator page is served the same way: one policy, one nonce, one shell.
+     *
+     * <p>This used to carry a policy of its own that had drifted from the dashboard's —
+     * which is how the sign-in page ended up under a weaker one nobody was looking at.
+     */
+    private ResponseEntity<String> html(String title, String body) {
+        String nonce = DashboardRenderer.newNonce();
         return ResponseEntity.ok()
                 .contentType(MediaType.TEXT_HTML)
                 // form-action 'self' rather than 'none': the buttons post back here, and
                 // nowhere else is permitted as a destination.
-                .header("Content-Security-Policy",
-                        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
-                                + "frame-ancestors 'none'; base-uri 'none'")
+                .header("Content-Security-Policy", DashboardRenderer.csp(nonce))
                 .header("X-Content-Type-Options", "nosniff")
                 .header("Referrer-Policy", "no-referrer")
-                .body(page("Sign in", body));
+                .body(page(title, body, 0, nonce));
     }
 
     private static boolean isHttps(ServerWebExchange exchange) {
